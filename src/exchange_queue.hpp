@@ -56,6 +56,11 @@ public:
         return count;
     }
 
+    bool empty() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return queue_.empty();
+    }
+
     void report_drops() const {
         // Mutex queue doesn't drop messages
     }
@@ -103,6 +108,10 @@ public:
         }
 
         return count;
+    }
+
+    bool empty() const {
+        return queue_.empty();
     }
 
     // Report dropped messages (queue full events)

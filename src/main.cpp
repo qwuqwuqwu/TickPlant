@@ -168,7 +168,6 @@ int main(int argc, char* argv[]) {
 
     // Start the arbitrage engine (Thread 2)
     g_arbitrage_engine->set_min_profit_bps(5.0);  // 5 basis points minimum profit
-    g_arbitrage_engine->set_calculation_interval(std::chrono::milliseconds(100));  // Calculate every 100ms
     g_arbitrage_engine->set_max_reports(max_reports);
     g_arbitrage_engine->set_shutdown_callback([]() {
         g_shutdown = true;

@@ -5,6 +5,7 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
 #include <vector>
 #include <functional>
 #include <chrono>
@@ -31,9 +32,6 @@ public:
 
     // Set minimum profit threshold in basis points (default: 10 bps)
     void set_min_profit_bps(double min_profit_bps);
-
-    // Set calculation interval (default: 100ms)
-    void set_calculation_interval(std::chrono::milliseconds interval);
 
     // Set max number of latency reports before auto-shutdown (0 = unlimited)
     void set_max_reports(int max_reports);
@@ -69,7 +67,8 @@ private:
     // Thread management
     std::thread calculation_thread_;
     std::atomic<bool> running_;
-    std::chrono::milliseconds calculation_interval_;
+    std::condition_variable cv_;
+    std::mutex cv_mutex_;
 
     // Statistics
     std::atomic<uint64_t> calculation_count_;

@@ -6,7 +6,6 @@
 
 ArbitrageEngine::ArbitrageEngine()
     : running_(false)
-    , calculation_interval_(100)  // 100ms default
     , calculation_count_(0)
     , opportunity_count_(0)
     , min_profit_bps_(5.0)  // 5 basis points minimum profit
@@ -34,6 +33,7 @@ void ArbitrageEngine::start() {
 
 void ArbitrageEngine::stop() {
     running_ = false;
+    cv_.notify_one();
 
     if (calculation_thread_.joinable()) {
         calculation_thread_.join();
@@ -48,6 +48,7 @@ void ArbitrageEngine::stop() {
 void ArbitrageEngine::update_market_data(const TickerData& ticker) {
     // Push to per-exchange queue (timestamp is recorded inside push())
     incoming_queues_.push(ticker);
+    cv_.notify_one();
 }
 
 void ArbitrageEngine::set_opportunity_callback(ArbitrageCallback callback) {
@@ -57,10 +58,6 @@ void ArbitrageEngine::set_opportunity_callback(ArbitrageCallback callback) {
 
 void ArbitrageEngine::set_min_profit_bps(double min_profit_bps) {
     min_profit_bps_ = min_profit_bps;
-}
-
-void ArbitrageEngine::set_calculation_interval(std::chrono::milliseconds interval) {
-    calculation_interval_ = interval;
 }
 
 void ArbitrageEngine::set_max_reports(int max_reports) {
@@ -89,6 +86,13 @@ void ArbitrageEngine::calculation_loop() {
     const auto report_interval = std::chrono::seconds(10);
 
     while (running_) {
+        {
+            std::unique_lock<std::mutex> lk(cv_mutex_);
+            cv_.wait(lk, [this] { return !incoming_queues_.empty() || !running_.load(); });
+        }
+
+        if (!running_) break;
+
         // Drain all incoming queues into market_data_
         drain_incoming_queues();
 
@@ -119,7 +123,6 @@ void ArbitrageEngine::calculation_loop() {
             }
         }
 
-        std::this_thread::sleep_for(calculation_interval_);
     }
 }
 
