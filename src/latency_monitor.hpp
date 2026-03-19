@@ -59,7 +59,6 @@ public:
             }
 
             sample_buffer_ = std::make_unique<BlockingSPSCRingBuffer<LatencyMeasurement, 1048576>>();
-            sample_buffer_->set_overwrite_on_full(true);  // Overwrite old samples if full
 
             // Initialize histograms for each metric
             for (int i = 0; i < static_cast<int>(LatencyMetric::NUM_METRICS); ++i) {
