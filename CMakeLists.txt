@@ -18,6 +18,7 @@ find_package(Boost REQUIRED COMPONENTS system thread)
 add_executable(binance_dashboard
     src/main.cpp
     src/binance_client.cpp
+    src/bybit_client.cpp
     src/coinbase_client.cpp
     src/kraken_client.cpp
     src/dashboard.cpp
