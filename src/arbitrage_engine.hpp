@@ -12,9 +12,9 @@
 #include <functional>
 #include <chrono>
 
-// Forward declarations — full definitions in fix_parser.hpp / order_book.hpp
-struct FIXMessage;
-class  OrderBook;
+// Full includes: FIXMessage used by value in update_fix_data,
+// OrderBookSnapshot used by value in update_order_book.
+#include "order_book.hpp"   // also pulls in fix_parser.hpp
 
 // Callback for arbitrage opportunities
 using ArbitrageCallback = std::function<void(const ArbitrageOpportunity&)>;
@@ -32,6 +32,13 @@ public:
 
     // Update market data via per-exchange queues (thread-safe, lock-free push)
     void update_market_data(const TickerData& ticker);
+
+    // Accept a full L2 depth snapshot from a WebSocket producer (Phase 2.4+).
+    // Updates the per-exchange L2 OrderBook.  Does NOT push to the BBO queue —
+    // the BBO path is handled separately by update_market_data() which the client
+    // fires from the same depth message.  Both paths run in parallel until 2.6.
+    // Thread-safe: called from WebSocket producer threads.
+    void update_order_book(const OrderBookSnapshot& snap);
 
     // Accept a parsed FIX market data message from the FIX feed simulator.
     // Routes to:
@@ -69,11 +76,16 @@ private:
     // Shared queue for incoming data (all exchanges push to the same queue)
     SharedQueue incoming_queues_;
 
-    // L2 order books for the FIX feed — one per symbol (keyed by raw FIX symbol
-    // string, e.g. "BTCUSD").  Written by the FIX simulator thread; will be read
-    // by the calculation thread starting in Phase 2.6.
+    // L2 order books for the FIX feed — keyed by raw FIX symbol (e.g. "BTCUSD").
+    // Written by the FIX simulator thread; read by the calculation thread in 2.6.
     std::unordered_map<std::string, std::unique_ptr<OrderBook>> fix_books_;
     mutable std::mutex                                           fix_books_mutex_;
+
+    // L2 order books for WebSocket producers — keyed by "EXCHANGE:SYMBOL"
+    // (e.g. "Binance:BTCUSDT").  Populated starting Phase 2.4 as each WebSocket
+    // producer is upgraded to a depth feed.  Read by calculation thread in 2.6.
+    std::unordered_map<std::string, std::unique_ptr<OrderBook>> ws_books_;
+    mutable std::mutex                                           ws_books_mutex_;
 
     // Market data storage (only accessed by calculation thread after draining queues)
     MarketDataMap market_data_;

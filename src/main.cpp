@@ -116,9 +116,16 @@ int main(int argc, char* argv[]) {
     std::cout << "Binance.US + Coinbase + Kraken + Bybit + FIX Simulator\n\n";
 
     // Set up callbacks to update dashboard and arbitrage engine when new data arrives
+
+    // Binance — Phase 2.4: depth feed (@depth20@100ms)
+    // BBO callback: dashboard display + existing BBO detection (unchanged path)
     g_binance_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
         g_arbitrage_engine->update_market_data(ticker);
+    });
+    // L2 depth callback: maintain OrderBook for Binance (used by Phase 2.6 detection)
+    g_binance_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        g_arbitrage_engine->update_order_book(snap);
     });
 
     g_coinbase_client->set_message_callback([&](const TickerData& ticker) {

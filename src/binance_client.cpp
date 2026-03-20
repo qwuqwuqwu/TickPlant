@@ -139,6 +139,11 @@ void BinanceWebSocketClient::set_message_callback(MessageCallback callback) {
     message_callback_ = callback;
 }
 
+void BinanceWebSocketClient::set_depth_callback(DepthCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    depth_callback_ = callback;
+}
+
 void BinanceWebSocketClient::run_client() {
     thread_affinity::set_thread_affinity(thread_affinity::TAG_BINANCE_WS);
 
@@ -183,62 +188,98 @@ void BinanceWebSocketClient::on_read(beast::error_code ec, std::size_t bytes_tra
 
     try {
         std::string message = beast::buffers_to_string(buffer_.data());
-        parse_ticker_message(message);
+        parse_depth_message(message);
     } catch (const std::exception& e) {
         std::cerr << "Message parsing error: " << e.what() << std::endl;
     }
 }
 
-void BinanceWebSocketClient::parse_ticker_message(const std::string& message) {
+void BinanceWebSocketClient::parse_depth_message(const std::string& message) {
     try {
         auto j = json::parse(message);
 
         // Binance combined stream format: { "stream": "...", "data": {...} }
         if (!j.contains("data") || !j.contains("stream")) {
-            return;  // Not a data message
-        }
-
-        // Check if this is a bookTicker stream
-        std::string stream = j["stream"].get<std::string>();
-        if (stream.find("@bookTicker") == std::string::npos) {
             return;
         }
 
-        auto data = j["data"];
+        // Only handle @depth streams
+        const std::string stream = j["stream"].get<std::string>();
+        if (stream.find("@depth") == std::string::npos) {
+            return;
+        }
 
-        // Parse ticker data
-        TickerData ticker;
-        ticker.symbol = data["s"].get<std::string>();
-        ticker.exchange = "Binance";
-        ticker.bid_price = std::stod(data["b"].get<std::string>());
-        ticker.ask_price = std::stod(data["a"].get<std::string>());
-        ticker.bid_quantity = std::stod(data["B"].get<std::string>());
-        ticker.ask_quantity = std::stod(data["A"].get<std::string>());
+        // Extract symbol from stream name: "btcusdt@depth20@100ms" -> "BTCUSDT"
+        std::string sym = stream.substr(0, stream.find('@'));
+        std::transform(sym.begin(), sym.end(), sym.begin(), ::toupper);
 
-        // Set timestamp
-        auto now = std::chrono::system_clock::now();
-        ticker.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()
-        ).count();
+        const auto& data = j["data"];
+        if (!data.contains("bids") || !data.contains("asks")) {
+            return;
+        }
 
-        // Call the callback with the new ticker data
+        const auto now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count()
+        );
+
+        // Build OrderBookSnapshot directly from the JSON arrays.
+        // @depth20@100ms is always a complete snapshot of the top 20 levels.
+        OrderBookSnapshot snap;
+        snap.symbol       = sym;
+        snap.exchange     = "Binance";
+        snap.timestamp_ms = now_ms;
+
+        snap.bids.reserve(data["bids"].size());
+        for (const auto& level : data["bids"]) {
+            const double price = std::stod(level[0].get<std::string>());
+            const double qty   = std::stod(level[1].get<std::string>());
+            if (qty > 0.0) snap.bids.push_back({price, qty, 0});
+        }
+
+        snap.asks.reserve(data["asks"].size());
+        for (const auto& level : data["asks"]) {
+            const double price = std::stod(level[0].get<std::string>());
+            const double qty   = std::stod(level[1].get<std::string>());
+            if (qty > 0.0) snap.asks.push_back({price, qty, 0});
+        }
+
+        // Binance already returns bids descending and asks ascending — no sort needed.
+
         {
             std::lock_guard<std::mutex> lock(callback_mutex_);
-            if (message_callback_) {
+
+            // ── L2 depth callback (new path) ──────────────────────────────
+            if (depth_callback_) {
+                depth_callback_(snap);
+            }
+
+            // ── BBO callback (backward compat: dashboard + BBO detection) ─
+            if (message_callback_ && !snap.bids.empty() && !snap.asks.empty()) {
+                TickerData ticker;
+                ticker.symbol       = sym;
+                ticker.exchange     = "Binance";
+                ticker.bid_price    = snap.best_bid();
+                ticker.ask_price    = snap.best_ask();
+                ticker.bid_quantity = snap.bids.front().quantity;
+                ticker.ask_quantity = snap.asks.front().quantity;
+                ticker.timestamp_ms = now_ms;
                 message_callback_(ticker);
             }
         }
 
     } catch (const json::exception& e) {
-        std::cerr << "JSON parsing error: " << e.what() << std::endl;
+        std::cerr << "Binance JSON parsing error: " << e.what() << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Ticker parsing error: " << e.what() << std::endl;
+        std::cerr << "Binance depth parsing error: " << e.what() << std::endl;
     }
 }
 
 std::string BinanceWebSocketClient::symbol_to_stream(const std::string& symbol) {
-    // Convert "BTCUSDT" to "btcusdt@bookTicker"
+    // "BTCUSDT" -> "btcusdt@depth20@100ms"
+    // Top-20 partial book depth: always a complete snapshot, no diff management needed.
     std::string lower_symbol = symbol;
     std::transform(lower_symbol.begin(), lower_symbol.end(), lower_symbol.begin(), ::tolower);
-    return lower_symbol + "@bookTicker";
+    return lower_symbol + "@depth20@100ms";
 }

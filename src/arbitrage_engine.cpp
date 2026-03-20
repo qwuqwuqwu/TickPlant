@@ -267,6 +267,26 @@ void ArbitrageEngine::calculate_arbitrage() {
     }
 }
 
+void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
+    const std::string key = snap.exchange + ":" + snap.symbol;
+
+    std::lock_guard<std::mutex> lk(ws_books_mutex_);
+    auto it = ws_books_.find(key);
+    if (it == ws_books_.end()) {
+        ws_books_.emplace(key, std::make_unique<OrderBook>(snap.symbol, snap.exchange));
+        it = ws_books_.find(key);
+    }
+
+    OrderBook& book = *it->second;
+    book.clear();
+    for (const auto& level : snap.bids)
+        book.set_level(OrderBook::Side::Bid, level.price, level.quantity, level.order_count);
+    for (const auto& level : snap.asks)
+        book.set_level(OrderBook::Side::Ask, level.price, level.quantity, level.order_count);
+    // Note: does NOT call update_market_data() — BBO is already pushed by the
+    // client's MessageCallback.  Two separate calls, one queue entry, no duplication.
+}
+
 void ArbitrageEngine::update_fix_data(const FIXMessage& msg) {
     if (!msg.is_market_data()) return;
 
