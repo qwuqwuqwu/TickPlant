@@ -118,39 +118,39 @@ int main(int argc, char* argv[]) {
 
     // Set up callbacks to update dashboard and arbitrage engine when new data arrives
 
-    // Binance — Phase 2.4: depth feed (@depth20@100ms)
-    // BBO callback: dashboard display + existing BBO detection (unchanged path)
+    // ── Phase 2.6: BBO path removed from ArbitrageEngine ─────────────────────
+    // Each exchange client fires two independent callbacks:
+    //   message_callback_ → dashboard display only (TickerData / BBO)
+    //   depth_callback_   → L2 book update + arb detection (OrderBookSnapshot)
+    // ArbitrageEngine no longer receives TickerData; detection is pure L2.
+
+    // Binance — @depth20@100ms (always full partial-book snapshot)
     g_binance_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
-        g_arbitrage_engine->update_market_data(ticker);
     });
-    // L2 depth callback: maintain OrderBook for Binance (used by Phase 2.6 detection)
     g_binance_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
         g_arbitrage_engine->update_order_book(snap);
     });
 
-    // Coinbase — Phase 2.5: level2 feed (snapshot + incremental updates)
+    // Coinbase — level2 (snapshot + incremental updates)
     g_coinbase_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
-        g_arbitrage_engine->update_market_data(ticker);
     });
     g_coinbase_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
         g_arbitrage_engine->update_order_book(snap);
     });
 
-    // Kraken — Phase 2.5: book feed (depth=10, snapshot + incremental updates)
+    // Kraken — book depth=10 (snapshot + incremental updates)
     g_kraken_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
-        g_arbitrage_engine->update_market_data(ticker);
     });
     g_kraken_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
         g_arbitrage_engine->update_order_book(snap);
     });
 
-    // Bybit — Phase 2.5: orderbook.50 feed (snapshot + incremental deltas)
+    // Bybit — orderbook.50 (snapshot + incremental deltas)
     g_bybit_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
-        g_arbitrage_engine->update_market_data(ticker);
     });
     g_bybit_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
         g_arbitrage_engine->update_order_book(snap);
@@ -160,11 +160,9 @@ int main(int argc, char* argv[]) {
     g_dashboard->set_arbitrage_engine(g_arbitrage_engine.get());
 
     // ── FIX Feed Simulator (fifth producer) ───────────────────────────────
-    // Generates synthetic L2 depth messages for the same crypto symbols as the
-    // four WebSocket producers.  Feeds:
-    //   - an OrderBook keyed "FIX" for L2 depth (Phase 2.3)
-    //   - the existing BBO detection queue via to_ticker_data() so the arb
-    //     engine sees FIX as a fifth exchange today (migrated in Phase 2.6)
+    // Generates synthetic L2 depth messages (35=W snapshot + 35=X incremental)
+    // for the same crypto symbols as the four WebSocket producers.
+    // Feeds fix_books_ in ArbitrageEngine via update_fix_data().
     g_fix_simulator = std::make_unique<FIXFeedSimulator>("FIX");
 
     // Mirror the main symbol list in FIX format (USD suffix, no T).

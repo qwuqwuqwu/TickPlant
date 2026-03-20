@@ -1,17 +1,20 @@
 #include "arbitrage_engine.hpp"
 #include "fix_parser.hpp"
 #include "order_book.hpp"
-#include "queue_latency_tracker.hpp"
 #include "thread_affinity.hpp"
 #include <iostream>
 #include <algorithm>
+#include <chrono>
+
+// ─── Constructor / Destructor ─────────────────────────────────────────────────
 
 ArbitrageEngine::ArbitrageEngine()
     : running_(false)
+    , books_dirty_(false)
     , calculation_count_(0)
     , opportunity_count_(0)
-    , min_profit_bps_(5.0)  // 5 basis points minimum profit
-    , max_reports_(0)       // 0 = unlimited
+    , min_profit_bps_(5.0)
+    , max_reports_(0)
     , report_count_(0) {
 }
 
@@ -19,39 +22,99 @@ ArbitrageEngine::~ArbitrageEngine() {
     stop();
 }
 
-void ArbitrageEngine::start() {
-    if (running_) {
-        return;
-    }
+// ─── Lifecycle ────────────────────────────────────────────────────────────────
 
+void ArbitrageEngine::start() {
+    if (running_) return;
     running_ = true;
     calculation_thread_ = std::thread(&ArbitrageEngine::calculation_loop, this);
-#ifdef USE_MPSC_QUEUE
-    std::cout << "Arbitrage engine started (shared MPSC lock-free queue)." << std::endl;
-#else
-    std::cout << "Arbitrage engine started (shared mutex queue)." << std::endl;
-#endif
+    std::cout << "Arbitrage engine started (pure L2 book comparison mode).\n";
 }
 
 void ArbitrageEngine::stop() {
     running_ = false;
+    books_dirty_ = true;    // unblock the wait
     cv_.notify_one();
 
     if (calculation_thread_.joinable()) {
         calculation_thread_.join();
     }
 
-    // Print final latency report
     print_latency_report();
-
-    std::cout << "Arbitrage engine stopped." << std::endl;
+    std::cout << "Arbitrage engine stopped.\n";
 }
 
-void ArbitrageEngine::update_market_data(const TickerData& ticker) {
-    // Push to per-exchange queue (timestamp is recorded inside push())
-    incoming_queues_.push(ticker);
+// ─── Producer-side API (called from WebSocket / FIX threads) ─────────────────
+
+void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
+    const std::string key = snap.exchange + ":" + snap.symbol;
+
+    {
+        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        auto it = ws_books_.find(key);
+        if (it == ws_books_.end()) {
+            ws_books_.emplace(key, std::make_unique<OrderBook>(snap.symbol, snap.exchange));
+            it = ws_books_.find(key);
+        }
+
+        OrderBook& book = *it->second;
+
+        if (snap.is_snapshot) {
+            // Full replace — clear then repopulate.
+            // Binance (@depth20@100ms always complete), and initial snapshot from
+            // Bybit / Coinbase / Kraken.
+            book.clear();
+            for (const auto& lvl : snap.bids)
+                book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+            for (const auto& lvl : snap.asks)
+                book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+        } else {
+            // Incremental delta — quantity == 0.0 means "delete this price level".
+            for (const auto& lvl : snap.bids) {
+                if (lvl.quantity == 0.0)
+                    book.delete_level(OrderBook::Side::Bid, lvl.price);
+                else
+                    book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+            }
+            for (const auto& lvl : snap.asks) {
+                if (lvl.quantity == 0.0)
+                    book.delete_level(OrderBook::Side::Ask, lvl.price);
+                else
+                    book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+            }
+        }
+    }
+
+    // Wake the calculation thread
+    books_dirty_ = true;
     cv_.notify_one();
 }
+
+void ArbitrageEngine::update_fix_data(const FIXMessage& msg) {
+    if (!msg.is_market_data()) return;
+
+    const std::string sym(msg.symbol);
+
+    {
+        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        auto it = fix_books_.find(sym);
+        if (it == fix_books_.end()) {
+            fix_books_.emplace(sym, std::make_unique<OrderBook>(sym, "FIX"));
+            it = fix_books_.find(sym);
+        }
+        if (msg.msg_type == FIXMsgType::MarketDataSnapshot) {
+            it->second->apply_snapshot(msg);
+        } else {
+            it->second->apply_update(msg);
+        }
+    }
+
+    // Wake the calculation thread
+    books_dirty_ = true;
+    cv_.notify_one();
+}
+
+// ─── Configuration ────────────────────────────────────────────────────────────
 
 void ArbitrageEngine::set_opportunity_callback(ArbitrageCallback callback) {
     std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -76,182 +139,168 @@ std::vector<ArbitrageOpportunity> ArbitrageEngine::get_opportunities() const {
 }
 
 void ArbitrageEngine::print_latency_report() const {
-    get_queue_latency_tracker().print_report();
+    std::cout << "  Calculations: " << calculation_count_.load()
+              << "  Opportunities found: " << opportunity_count_.load() << "\n";
+
+    // Book inventory: how many live books per side
+    size_t ws_count = 0, fix_count = 0;
+    {
+        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        ws_count = ws_books_.size();
+    }
+    {
+        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        fix_count = fix_books_.size();
+    }
+    std::cout << "  L2 books: " << ws_count << " WebSocket  "
+              << fix_count << " FIX\n";
 }
 
+// ─── Calculation thread ───────────────────────────────────────────────────────
+
 void ArbitrageEngine::calculation_loop() {
-    // Pin arbitrage engine thread (hot path - most latency-sensitive)
     thread_affinity::set_thread_affinity(thread_affinity::TAG_ARBITRAGE_ENGINE);
 
-    // Print latency report periodically
     auto last_report_time = std::chrono::steady_clock::now();
     const auto report_interval = std::chrono::seconds(10);
 
     while (running_) {
+        // Sleep until any book is updated or shutdown is requested
         {
             std::unique_lock<std::mutex> lk(cv_mutex_);
-            cv_.wait(lk, [this] { return !incoming_queues_.empty() || !running_.load(); });
+            cv_.wait(lk, [this] { return books_dirty_.load() || !running_.load(); });
+            books_dirty_ = false;
         }
 
         if (!running_) break;
 
-        // Drain all incoming queues into market_data_
-        drain_incoming_queues();
-
-        // Calculate arbitrage
         calculate_arbitrage();
 
-        // Print latency report every 10 seconds
         auto now = std::chrono::steady_clock::now();
         if (now - last_report_time >= report_interval) {
             report_count_++;
             std::cout << "\n[Report " << report_count_;
-            if (max_reports_ > 0) {
-                std::cout << "/" << max_reports_;
-            }
+            if (max_reports_ > 0) std::cout << "/" << max_reports_;
             std::cout << "]\n";
             print_latency_report();
             last_report_time = now;
 
-            // Auto-shutdown after max reports reached
             if (max_reports_ > 0 && report_count_ >= max_reports_) {
                 std::cout << "\nBenchmark complete: " << report_count_
                           << " reports collected. Shutting down gracefully.\n";
                 running_ = false;
-                if (shutdown_callback_) {
-                    shutdown_callback_();
-                }
+                if (shutdown_callback_) shutdown_callback_();
                 break;
             }
         }
-
     }
 }
 
-void ArbitrageEngine::drain_incoming_queues() {
-    // Drain all queues - this updates market_data_ with latest prices
-    // Latency measurement happens inside try_pop() automatically
-    incoming_queues_.drain_all(market_data_);
-}
+// ─── Arbitrage detection (pure L2) ───────────────────────────────────────────
 
 void ArbitrageEngine::calculate_arbitrage() {
-    // No lock needed here - market_data_ is only accessed by this thread
     calculation_count_++;
 
-    // Build a map of symbols to their tickers across exchanges
-    std::unordered_map<std::string, std::vector<TickerData>> symbol_map;
+    // ── Snapshot BBO for every book ───────────────────────────────────────────
+    // We hold each outer mutex only long enough to iterate the map and call
+    // book->get_snapshot() (which acquires the book's internal shared_mutex).
+    // Result: by_symbol[normalized_sym] = vector of (exchange, snapshot) pairs.
+    using BookEntry = std::pair<std::string, OrderBookSnapshot>;
+    std::unordered_map<std::string, std::vector<BookEntry>> by_symbol;
 
-    for (const auto& [key, ticker] : market_data_) {
-        // Consider LIVE and SLOW data (but not STALE)
-        auto status = get_data_status(ticker);
-        if (status == DataStatus::LIVE || status == DataStatus::SLOW) {
-            std::string normalized = normalize_symbol(ticker.symbol);
-            symbol_map[normalized].push_back(ticker);
+    const auto now_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+    {
+        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        for (const auto& [key, book] : ws_books_) {
+            auto snap = book->get_snapshot();
+            if (snap.empty()) continue;
+            // Skip books not updated in the last 500 ms — feed may have dropped
+            if (now_ms - snap.timestamp_ms > 500) continue;
+            std::string norm = normalize_symbol(snap.symbol);
+            by_symbol[norm].emplace_back(snap.exchange, std::move(snap));
         }
     }
 
-    // Find arbitrage opportunities
+    {
+        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        for (const auto& [sym, book] : fix_books_) {
+            auto snap = book->get_snapshot();
+            if (snap.empty()) continue;
+            if (now_ms - snap.timestamp_ms > 500) continue;
+            std::string norm = normalize_symbol(sym);
+            by_symbol[norm].emplace_back("FIX", std::move(snap));
+        }
+    }
+
+    // ── Compare all (exchange_i, exchange_j) pairs for each symbol ────────────
+    // The quantity check at the best level eliminates phantom arbitrage signals
+    // where a spread exists but there is zero size available to execute against.
     std::vector<ArbitrageOpportunity> new_opportunities;
 
-    for (const auto& [symbol, tickers] : symbol_map) {
-        // Need at least 2 exchanges for arbitrage
-        if (tickers.size() < 2) {
-            continue;
-        }
+    for (const auto& [norm_sym, entries] : by_symbol) {
+        if (entries.size() < 2) continue;
 
-        // Check all pairs of exchanges for this symbol
-        for (size_t i = 0; i < tickers.size(); ++i) {
-            for (size_t j = i + 1; j < tickers.size(); ++j) {
-                const auto& ticker1 = tickers[i];
-                const auto& ticker2 = tickers[j];
+        for (size_t i = 0; i < entries.size(); ++i) {
+            for (size_t j = i + 1; j < entries.size(); ++j) {
+                const auto& [ex1, snap1] = entries[i];
+                const auto& [ex2, snap2] = entries[j];
 
-                // Check data age difference to detect stale data
-                auto age1_ms = ticker1.age().count();
-                auto age2_ms = ticker2.age().count();
-                auto age_diff_ms = std::abs(static_cast<long>(age1_ms - age2_ms));
+                // Direction 1: Buy on exchange1 at ask, sell on exchange2 at bid
+                if (!snap1.asks.empty() && !snap2.bids.empty()) {
+                    double ask = snap1.best_ask();
+                    double bid = snap2.best_bid();
+                    if (bid > ask && ask > 0.0) {
+                        double profit_bps = ((bid - ask) / ask) * 10'000.0;
+                        double qty = std::min(snap1.asks.front().quantity,
+                                             snap2.bids.front().quantity);
+                        if (profit_bps >= min_profit_bps_ && qty > 0.0) {
+                            ArbitrageOpportunity opp;
+                            opp.symbol        = norm_sym;
+                            opp.buy_exchange  = ex1;
+                            opp.sell_exchange = ex2;
+                            opp.buy_price     = ask;
+                            opp.sell_price    = bid;
+                            opp.profit_bps    = profit_bps;
+                            opp.max_quantity  = qty;
+                            opp.timestamp_ms  = now_ms;
+                            new_opportunities.push_back(opp);
+                            opportunity_count_++;
 
-                // Log timestamp differences for debugging (first 5 times)
-                static int timestamp_debug_count = 0;
-                if (timestamp_debug_count < 5 && age_diff_ms > 100) {
-                    std::cout << "DEBUG: Age difference for " << symbol << ": "
-                              << ticker1.exchange << "=" << age1_ms << "ms, "
-                              << ticker2.exchange << "=" << age2_ms << "ms, "
-                              << "diff=" << age_diff_ms << "ms" << std::endl;
-                    timestamp_debug_count++;
-                }
-
-                // Skip if data age difference is too large (>500ms)
-                if (age_diff_ms > 500) {
-                    continue;
-                }
-
-                // Check arbitrage in both directions
-                // Direction 1: Buy on exchange1, sell on exchange2
-                if (ticker2.bid_price > ticker1.ask_price) {
-                    double profit_bps = ((ticker2.bid_price - ticker1.ask_price) / ticker1.ask_price) * 10000.0;
-
-                    if (profit_bps >= min_profit_bps_) {
-                        ArbitrageOpportunity opp;
-                        opp.symbol = symbol;
-                        opp.buy_exchange = ticker1.exchange;
-                        opp.sell_exchange = ticker2.exchange;
-                        opp.buy_price = ticker1.ask_price;
-                        opp.sell_price = ticker2.bid_price;
-                        opp.profit_bps = profit_bps;
-                        opp.max_quantity = std::min(ticker1.ask_quantity, ticker2.bid_quantity);
-
-                        static int direction_debug = 0;
-                        if (direction_debug < 3) {
-                            std::cout << "DEBUG: Opportunity " << symbol << " Buy " << ticker1.exchange
-                                      << " @ " << ticker1.ask_price << " (age=" << age1_ms << "ms) Sell "
-                                      << ticker2.exchange << " @ " << ticker2.bid_price << " (age=" << age2_ms
-                                      << "ms) Profit=" << profit_bps << "bp" << std::endl;
-                            direction_debug++;
-                        }
-
-                        auto now = std::chrono::system_clock::now();
-                        opp.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            now.time_since_epoch()
-                        ).count();
-
-                        new_opportunities.push_back(opp);
-                        opportunity_count_++;
-
-                        {
-                            std::lock_guard<std::mutex> cb_lock(callback_mutex_);
-                            if (opportunity_callback_) {
-                                opportunity_callback_(opp);
+                            {
+                                std::lock_guard<std::mutex> cb(callback_mutex_);
+                                if (opportunity_callback_) opportunity_callback_(opp);
                             }
                         }
                     }
                 }
 
-                // Direction 2: Buy on exchange2, sell on exchange1
-                if (ticker1.bid_price > ticker2.ask_price) {
-                    double profit_bps = ((ticker1.bid_price - ticker2.ask_price) / ticker2.ask_price) * 10000.0;
+                // Direction 2: Buy on exchange2 at ask, sell on exchange1 at bid
+                if (!snap2.asks.empty() && !snap1.bids.empty()) {
+                    double ask = snap2.best_ask();
+                    double bid = snap1.best_bid();
+                    if (bid > ask && ask > 0.0) {
+                        double profit_bps = ((bid - ask) / ask) * 10'000.0;
+                        double qty = std::min(snap2.asks.front().quantity,
+                                             snap1.bids.front().quantity);
+                        if (profit_bps >= min_profit_bps_ && qty > 0.0) {
+                            ArbitrageOpportunity opp;
+                            opp.symbol        = norm_sym;
+                            opp.buy_exchange  = ex2;
+                            opp.sell_exchange = ex1;
+                            opp.buy_price     = ask;
+                            opp.sell_price    = bid;
+                            opp.profit_bps    = profit_bps;
+                            opp.max_quantity  = qty;
+                            opp.timestamp_ms  = now_ms;
+                            new_opportunities.push_back(opp);
+                            opportunity_count_++;
 
-                    if (profit_bps >= min_profit_bps_) {
-                        ArbitrageOpportunity opp;
-                        opp.symbol = symbol;
-                        opp.buy_exchange = ticker2.exchange;
-                        opp.sell_exchange = ticker1.exchange;
-                        opp.buy_price = ticker2.ask_price;
-                        opp.sell_price = ticker1.bid_price;
-                        opp.profit_bps = profit_bps;
-                        opp.max_quantity = std::min(ticker2.ask_quantity, ticker1.bid_quantity);
-
-                        auto now = std::chrono::system_clock::now();
-                        opp.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            now.time_since_epoch()
-                        ).count();
-
-                        new_opportunities.push_back(opp);
-                        opportunity_count_++;
-
-                        {
-                            std::lock_guard<std::mutex> cb_lock(callback_mutex_);
-                            if (opportunity_callback_) {
-                                opportunity_callback_(opp);
+                            {
+                                std::lock_guard<std::mutex> cb(callback_mutex_);
+                                if (opportunity_callback_) opportunity_callback_(opp);
                             }
                         }
                     }
@@ -260,104 +309,34 @@ void ArbitrageEngine::calculate_arbitrage() {
         }
     }
 
-    // Update stored opportunities
     {
         std::lock_guard<std::mutex> opp_lock(opportunities_mutex_);
         opportunities_ = std::move(new_opportunities);
     }
 }
 
-void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
-    const std::string key = snap.exchange + ":" + snap.symbol;
-
-    std::lock_guard<std::mutex> lk(ws_books_mutex_);
-    auto it = ws_books_.find(key);
-    if (it == ws_books_.end()) {
-        ws_books_.emplace(key, std::make_unique<OrderBook>(snap.symbol, snap.exchange));
-        it = ws_books_.find(key);
-    }
-
-    OrderBook& book = *it->second;
-
-    if (snap.is_snapshot) {
-        // Full replace — clear then repopulate from every level in the snapshot.
-        // Used by Binance (@depth20@100ms always sends complete partial book) and
-        // the initial snapshot from Bybit / Coinbase / Kraken.
-        book.clear();
-        for (const auto& level : snap.bids)
-            book.set_level(OrderBook::Side::Bid, level.price, level.quantity, level.order_count);
-        for (const auto& level : snap.asks)
-            book.set_level(OrderBook::Side::Ask, level.price, level.quantity, level.order_count);
-    } else {
-        // Incremental delta — apply each changed level individually.
-        // quantity == 0.0 means "delete this price level" (Bybit/Coinbase/Kraken convention).
-        for (const auto& level : snap.bids) {
-            if (level.quantity == 0.0)
-                book.delete_level(OrderBook::Side::Bid, level.price);
-            else
-                book.set_level(OrderBook::Side::Bid, level.price, level.quantity, level.order_count);
-        }
-        for (const auto& level : snap.asks) {
-            if (level.quantity == 0.0)
-                book.delete_level(OrderBook::Side::Ask, level.price);
-            else
-                book.set_level(OrderBook::Side::Ask, level.price, level.quantity, level.order_count);
-        }
-    }
-    // Note: does NOT call update_market_data() — BBO is already pushed by the
-    // client's MessageCallback.  Two separate calls, one queue entry, no duplication.
-}
-
-void ArbitrageEngine::update_fix_data(const FIXMessage& msg) {
-    if (!msg.is_market_data()) return;
-
-    const std::string sym(msg.symbol);
-
-    // ── (a) Update L2 OrderBook ────────────────────────────────────────────
-    {
-        std::lock_guard<std::mutex> lk(fix_books_mutex_);
-        auto it = fix_books_.find(sym);
-        if (it == fix_books_.end()) {
-            fix_books_.emplace(sym, std::make_unique<OrderBook>(sym, "FIX"));
-            it = fix_books_.find(sym);
-        }
-        if (msg.msg_type == FIXMsgType::MarketDataSnapshot) {
-            it->second->apply_snapshot(msg);
-        } else {
-            it->second->apply_update(msg);
-        }
-    }
-
-    // ── (b) Feed BBO to existing detection path ───────────────────────────
-    // to_ticker_data() already sets exchange="FIX" and copies symbol to string.
-    // This feeds the FIX simulator into calculate_arbitrage() alongside the
-    // four WebSocket producers until Phase 2.6 migrates to pure L2 detection.
-    if (auto td = msg.to_ticker_data()) {
-        update_market_data(*td);  // also calls cv_.notify_one()
-    }
-}
+// ─── Symbol normalization ─────────────────────────────────────────────────────
 
 std::string ArbitrageEngine::normalize_symbol(const std::string& symbol) const {
-    std::string normalized = symbol;
+    std::string norm = symbol;
+    std::transform(norm.begin(), norm.end(), norm.begin(), ::toupper);
 
-    // Convert to uppercase
-    std::transform(normalized.begin(), normalized.end(), normalized.begin(), ::toupper);
-
-    // Handle Coinbase format (BTC-USD) -> normalize to base currency
-    if (normalized.find('-') != std::string::npos) {
-        normalized = normalized.substr(0, normalized.find('-'));
+    // Coinbase: "BTC-USD" → "BTC"
+    if (auto pos = norm.find('-'); pos != std::string::npos) {
+        norm.resize(pos);
     }
-    // Handle Kraken format (BTC/USD) -> normalize to base currency
-    else if (normalized.find('/') != std::string::npos) {
-        normalized = normalized.substr(0, normalized.find('/'));
+    // Kraken: "BTC/USD" → "BTC"
+    else if (auto pos = norm.find('/'); pos != std::string::npos) {
+        norm.resize(pos);
     }
-    // Handle Binance/Bybit format (BTCUSDT) -> normalize to base currency
-    else if (normalized.length() > 4 && normalized.substr(normalized.length() - 4) == "USDT") {
-        normalized = normalized.substr(0, normalized.length() - 4);
+    // Binance/Bybit: "BTCUSDT" → "BTC"
+    else if (norm.size() > 4 && norm.substr(norm.size() - 4) == "USDT") {
+        norm.resize(norm.size() - 4);
     }
-    else if (normalized.length() > 3 && normalized.substr(normalized.length() - 3) == "USD") {
-        normalized = normalized.substr(0, normalized.length() - 3);
+    // FIX simulator: "BTCUSD" → "BTC"
+    else if (norm.size() > 3 && norm.substr(norm.size() - 3) == "USD") {
+        norm.resize(norm.size() - 3);
     }
 
-    return normalized;
+    return norm;
 }
