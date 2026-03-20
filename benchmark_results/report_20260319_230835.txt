@@ -1,0 +1,167 @@
+TickPlant Benchmark Report
+Generated : 2026年 3月19日 週四 23時08分37秒 EDT
+Host      : QwuqwudeMacBook-Pro.local
+Repetitions: 3
+Build type : Release
+
+Benchmarks : bench_mpsc_queue bench_mutex_queue bench_spsc_queue bench_timing_overhead
+
+Darwin QwuqwudeMacBook-Pro.local 23.6.0 Darwin Kernel Version 23.6.0: Mon Jul 29 21:13:00 PDT 2024; root:xnu-10063.141.2~1/RELEASE_X86_64 x86_64
+
+
+════════════════════════════════════════════════════════════════
+  bench_mpsc_queue
+════════════════════════════════════════════════════════════════
+2026-03-19T23:08:37-04:00
+Running /Users/qwuqwuqwu/Project/LowLatency/TickPlant/build/bench_mpsc_queue
+Run on (8 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 48 KiB
+  L1 Instruction 32 KiB
+  L2 Unified 512 KiB (x4)
+  L3 Unified 6144 KiB
+Load Average: 6.50, 5.33, 4.77
+--------------------------------------------------------------------------------------------------------
+Benchmark                                              Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------------------------
+BM_MPSC_PushLatency/iterations:1000000_mean         46.4 ns         44.8 ns            3 min_ns=16 p50_ns=18.3333 p999_ns=35 p99_ns=22.6667
+BM_MPSC_PushLatency/iterations:1000000_median       45.9 ns         44.6 ns            3 min_ns=16 p50_ns=18 p999_ns=28 p99_ns=22
+BM_MPSC_PushLatency/iterations:1000000_stddev       1.25 ns        0.483 ns            3 min_ns=0 p50_ns=0.57735 p999_ns=13.8924 p99_ns=1.1547
+BM_MPSC_PushLatency/iterations:1000000_cv           2.70 %          1.08 %             3 min_ns=0.00% p50_ns=3.15% p999_ns=39.69% p99_ns=5.09%
+BM_MPSC_PopLatency/iterations:1000000_mean          40.4 ns         38.9 ns            3 min_ns=10 p50_ns=12 p999_ns=19.3333 p99_ns=13.3333
+BM_MPSC_PopLatency/iterations:1000000_median        40.2 ns         38.7 ns            3 min_ns=10 p50_ns=12 p999_ns=16 p99_ns=13
+BM_MPSC_PopLatency/iterations:1000000_stddev        1.83 ns        0.959 ns            3 min_ns=0 p50_ns=0 p999_ns=5.7735 p99_ns=0.57735
+BM_MPSC_PopLatency/iterations:1000000_cv            4.53 %          2.46 %             3 min_ns=0.00% p50_ns=0.00% p999_ns=29.86% p99_ns=4.33%
+BM_MPSC_Throughput/1/iterations:3_mean              4.21 ms         4.10 ms            3 items_per_second=24.4488M/s
+BM_MPSC_Throughput/1/iterations:3_median            4.28 ms         4.16 ms            3 items_per_second=24.0231M/s
+BM_MPSC_Throughput/1/iterations:3_stddev           0.191 ms        0.178 ms            3 items_per_second=1.08557M/s
+BM_MPSC_Throughput/1/iterations:3_cv                4.52 %          4.35 %             3 items_per_second=4.44%
+BM_MPSC_Throughput/2/iterations:3_mean              7.29 ms         7.15 ms            3 items_per_second=14.0661M/s
+BM_MPSC_Throughput/2/iterations:3_median            7.54 ms         7.52 ms            3 items_per_second=13.3049M/s
+BM_MPSC_Throughput/2/iterations:3_stddev           0.638 ms        0.665 ms            3 items_per_second=1.38086M/s
+BM_MPSC_Throughput/2/iterations:3_cv                8.75 %          9.29 %             3 items_per_second=9.82%
+BM_MPSC_Throughput/3/iterations:3_mean              9.37 ms         9.28 ms            3 items_per_second=10.8149M/s
+BM_MPSC_Throughput/3/iterations:3_median            9.40 ms         9.32 ms            3 items_per_second=10.7238M/s
+BM_MPSC_Throughput/3/iterations:3_stddev           0.585 ms        0.659 ms            3 items_per_second=776.233k/s
+BM_MPSC_Throughput/3/iterations:3_cv                6.24 %          7.11 %             3 items_per_second=7.18%
+BM_MPSC_Throughput/4/iterations:3_mean              9.89 ms         9.56 ms            3 items_per_second=10.5237M/s
+BM_MPSC_Throughput/4/iterations:3_median            10.1 ms         9.97 ms            3 items_per_second=10.0328M/s
+BM_MPSC_Throughput/4/iterations:3_stddev           0.523 ms        0.909 ms            3 items_per_second=1.05469M/s
+BM_MPSC_Throughput/4/iterations:3_cv                5.29 %          9.51 %             3 items_per_second=10.02%
+
+  JSON → /Users/qwuqwuqwu/Project/LowLatency/TickPlant/benchmark_results/20260319_230835_json/bench_mpsc_queue.json
+
+════════════════════════════════════════════════════════════════
+  bench_mutex_queue
+════════════════════════════════════════════════════════════════
+2026-03-19T23:08:37-04:00
+Running /Users/qwuqwuqwu/Project/LowLatency/TickPlant/build/bench_mutex_queue
+Run on (8 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 48 KiB
+  L1 Instruction 32 KiB
+  L2 Unified 512 KiB (x4)
+  L3 Unified 6144 KiB
+Load Average: 6.50, 5.33, 4.77
+---------------------------------------------------------------------------------------------------------
+Benchmark                                               Time             CPU   Iterations UserCounters...
+---------------------------------------------------------------------------------------------------------
+BM_Mutex_PushLatency/iterations:1000000_mean         82.9 ns         80.8 ns            3 min_ns=30 p50_ns=32 p999_ns=90 p99_ns=47.6667
+BM_Mutex_PushLatency/iterations:1000000_median       81.6 ns         79.5 ns            3 min_ns=30 p50_ns=32 p999_ns=83 p99_ns=49
+BM_Mutex_PushLatency/iterations:1000000_stddev       4.68 ns         3.81 ns            3 min_ns=0 p50_ns=0 p999_ns=26.2107 p99_ns=9.07377
+BM_Mutex_PushLatency/iterations:1000000_cv           5.64 %          4.72 %             3 min_ns=0.00% p50_ns=0.00% p999_ns=29.12% p99_ns=19.04%
+BM_Mutex_PopLatency/iterations:1000000_mean          79.6 ns         77.8 ns            3 min_ns=29.3333 p50_ns=32 p999_ns=49.6667 p99_ns=37.3333
+BM_Mutex_PopLatency/iterations:1000000_median        80.3 ns         78.7 ns            3 min_ns=29 p50_ns=32 p999_ns=45 p99_ns=37
+BM_Mutex_PopLatency/iterations:1000000_stddev        2.58 ns         2.14 ns            3 min_ns=0.57735 p50_ns=0 p999_ns=9.86577 p99_ns=2.51661
+BM_Mutex_PopLatency/iterations:1000000_cv            3.25 %          2.76 %             3 min_ns=1.97% p50_ns=0.00% p999_ns=19.86% p99_ns=6.74%
+BM_Mutex_Throughput/1/iterations:3_mean              11.9 ms         9.24 ms            3 items_per_second=10.8405M/s
+BM_Mutex_Throughput/1/iterations:3_median            12.0 ms         9.34 ms            3 items_per_second=10.7112M/s
+BM_Mutex_Throughput/1/iterations:3_stddev           0.122 ms        0.387 ms            3 items_per_second=461.556k/s
+BM_Mutex_Throughput/1/iterations:3_cv                1.02 %          4.19 %             3 items_per_second=4.26%
+BM_Mutex_Throughput/2/iterations:3_mean              13.6 ms         11.0 ms            3 items_per_second=9.07912M/s
+BM_Mutex_Throughput/2/iterations:3_median            13.5 ms         10.9 ms            3 items_per_second=9.13409M/s
+BM_Mutex_Throughput/2/iterations:3_stddev           0.280 ms        0.213 ms            3 items_per_second=173.865k/s
+BM_Mutex_Throughput/2/iterations:3_cv                2.06 %          1.93 %             3 items_per_second=1.91%
+BM_Mutex_Throughput/3/iterations:3_mean              11.8 ms         9.40 ms            3 items_per_second=10.6381M/s
+BM_Mutex_Throughput/3/iterations:3_median            11.8 ms         9.39 ms            3 items_per_second=10.6488M/s
+BM_Mutex_Throughput/3/iterations:3_stddev           0.051 ms        0.118 ms            3 items_per_second=133.706k/s
+BM_Mutex_Throughput/3/iterations:3_cv                0.43 %          1.26 %             3 items_per_second=1.26%
+BM_Mutex_Throughput/4/iterations:3_mean              14.0 ms         10.8 ms            3 items_per_second=9.26937M/s
+BM_Mutex_Throughput/4/iterations:3_median            13.9 ms         11.1 ms            3 items_per_second=9.03125M/s
+BM_Mutex_Throughput/4/iterations:3_stddev           0.254 ms        0.544 ms            3 items_per_second=480.022k/s
+BM_Mutex_Throughput/4/iterations:3_cv                1.82 %          5.03 %             3 items_per_second=5.18%
+
+  JSON → /Users/qwuqwuqwu/Project/LowLatency/TickPlant/benchmark_results/20260319_230835_json/bench_mutex_queue.json
+
+════════════════════════════════════════════════════════════════
+  bench_spsc_queue
+════════════════════════════════════════════════════════════════
+2026-03-19T23:08:38-04:00
+Running /Users/qwuqwuqwu/Project/LowLatency/TickPlant/build/bench_spsc_queue
+Run on (8 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 48 KiB
+  L1 Instruction 32 KiB
+  L2 Unified 512 KiB (x4)
+  L3 Unified 6144 KiB
+Load Average: 6.50, 5.33, 4.77
+--------------------------------------------------------------------------------------------------------
+Benchmark                                              Time             CPU   Iterations UserCounters...
+--------------------------------------------------------------------------------------------------------
+BM_SPSC_PushLatency/iterations:1000000_mean         42.0 ns         40.2 ns            3 min_ns=10 p50_ns=12 p999_ns=19.3333 p99_ns=16.3333
+BM_SPSC_PushLatency/iterations:1000000_median       40.4 ns         38.9 ns            3 min_ns=10 p50_ns=12 p999_ns=19 p99_ns=14
+BM_SPSC_PushLatency/iterations:1000000_stddev       3.07 ns         2.52 ns            3 min_ns=0 p50_ns=0 p999_ns=3.51188 p99_ns=4.04145
+BM_SPSC_PushLatency/iterations:1000000_cv           7.31 %          6.26 %             3 min_ns=0.00% p50_ns=0.00% p999_ns=18.16% p99_ns=24.74%
+BM_SPSC_PopLatency/iterations:1000000_mean          37.1 ns         35.7 ns            3 min_ns=10 p50_ns=12 p999_ns=16.3333 p99_ns=13.6667
+BM_SPSC_PopLatency/iterations:1000000_median        36.5 ns         34.5 ns            3 min_ns=10 p50_ns=12 p999_ns=16 p99_ns=14
+BM_SPSC_PopLatency/iterations:1000000_stddev        3.07 ns         2.88 ns            3 min_ns=0 p50_ns=0 p999_ns=2.51661 p99_ns=0.57735
+BM_SPSC_PopLatency/iterations:1000000_cv            8.27 %          8.07 %             3 min_ns=0.00% p50_ns=0.00% p999_ns=15.41% p99_ns=4.22%
+BM_SPSC_Throughput/iterations:3_mean               0.617 ms        0.602 ms            3 items_per_second=174.133M/s
+BM_SPSC_Throughput/iterations:3_median             0.524 ms        0.515 ms            3 items_per_second=194.175M/s
+BM_SPSC_Throughput/iterations:3_stddev             0.168 ms        0.169 ms            3 items_per_second=42.3133M/s
+BM_SPSC_Throughput/iterations:3_cv                 27.20 %         28.13 %             3 items_per_second=24.30%
+
+  JSON → /Users/qwuqwuqwu/Project/LowLatency/TickPlant/benchmark_results/20260319_230835_json/bench_spsc_queue.json
+
+════════════════════════════════════════════════════════════════
+  bench_timing_overhead
+════════════════════════════════════════════════════════════════
+2026-03-19T23:08:39-04:00
+Running /Users/qwuqwuqwu/Project/LowLatency/TickPlant/build/bench_timing_overhead
+Run on (8 X 2000 MHz CPU s)
+CPU Caches:
+  L1 Data 48 KiB
+  L1 Instruction 32 KiB
+  L2 Unified 512 KiB (x4)
+  L3 Unified 6144 KiB
+Load Average: 6.50, 5.33, 4.77
+----------------------------------------------------------------------
+Benchmark                            Time             CPU   Iterations
+----------------------------------------------------------------------
+BM_RDTSC_mean                     8.63 ns         8.47 ns            3
+BM_RDTSC_median                   8.51 ns         8.35 ns            3
+BM_RDTSC_stddev                  0.231 ns        0.205 ns            3
+BM_RDTSC_cv                       2.68 %          2.42 %             3
+BM_RDTSCp_mean                    15.0 ns         13.2 ns            3
+BM_RDTSCp_median                  14.3 ns         13.1 ns            3
+BM_RDTSCp_stddev                  2.66 ns        0.734 ns            3
+BM_RDTSCp_cv                     17.76 %          5.56 %             3
+BM_NowNS_mean                     10.8 ns         10.4 ns            3
+BM_NowNS_median                   11.0 ns         10.5 ns            3
+BM_NowNS_stddev                  0.338 ns        0.201 ns            3
+BM_NowNS_cv                       3.14 %          1.94 %             3
+BM_ScopedTimer_mean               20.1 ns         19.5 ns            3
+BM_ScopedTimer_median             19.8 ns         19.3 ns            3
+BM_ScopedTimer_stddev            0.808 ns        0.430 ns            3
+BM_ScopedTimer_cv                 4.02 %          2.21 %             3
+BM_ChronoSteadyClock_mean         39.7 ns         38.9 ns            3
+BM_ChronoSteadyClock_median       39.7 ns         38.9 ns            3
+BM_ChronoSteadyClock_stddev      0.193 ns        0.114 ns            3
+BM_ChronoSteadyClock_cv           0.49 %          0.29 %             3
+
+  JSON → /Users/qwuqwuqwu/Project/LowLatency/TickPlant/benchmark_results/20260319_230835_json/bench_timing_overhead.json
+
+════════════════════════════════════════════════════════════════
+  Done. Text report : /Users/qwuqwuqwu/Project/LowLatency/TickPlant/benchmark_results/report_20260319_230835.txt
+  JSON reports      : /Users/qwuqwuqwu/Project/LowLatency/TickPlant/benchmark_results/20260319_230835_json/
+════════════════════════════════════════════════════════════════
