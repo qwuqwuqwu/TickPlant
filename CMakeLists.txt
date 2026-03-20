@@ -29,6 +29,7 @@ add_executable(binance_dashboard
     src/dashboard.cpp
     src/arbitrage_engine.cpp
     src/fix_parser.cpp
+    src/order_book.cpp
 )
 
 # Include directories
@@ -103,6 +104,27 @@ if(BUILD_BENCHMARKS)
     )
     target_compile_options(bench_fix_parser PRIVATE
         -O3 -march=native
+    )
+endif()
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+# Enable with: cmake .. -DBUILD_TESTS=ON
+option(BUILD_TESTS "Build test harnesses (OrderBook ITCH replay)" OFF)
+
+if(BUILD_TESTS)
+    add_executable(order_book_test
+        tests/replay/order_book_test.cpp
+        tests/replay/itch_replay.cpp
+        src/order_book.cpp
+        src/fix_parser.cpp
+    )
+    target_include_directories(order_book_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/replay
+    )
+    target_compile_options(order_book_test PRIVATE
+        $<$<CONFIG:Release>:-O3 -march=native -DNDEBUG>
+        $<$<CONFIG:Debug>:-O0 -g>
     )
 endif()
 
