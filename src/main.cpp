@@ -167,7 +167,7 @@ int main(int argc, char* argv[]) {
     std::this_thread::sleep_for(std::chrono::seconds(2));  // Wait a bit for data to flow
 
     // Start the arbitrage engine (Thread 2)
-    g_arbitrage_engine->set_min_profit_bps(5.0);  // 5 basis points minimum profit
+    g_arbitrage_engine->set_min_profit_bps(0.1);  // 0.1 basis points minimum profit
     g_arbitrage_engine->set_max_reports(max_reports);
     g_arbitrage_engine->set_shutdown_callback([]() {
         g_shutdown = true;
