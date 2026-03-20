@@ -28,6 +28,7 @@ add_executable(binance_dashboard
     src/kraken_client.cpp
     src/dashboard.cpp
     src/arbitrage_engine.cpp
+    src/fix_parser.cpp
 )
 
 # Include directories
@@ -86,6 +87,23 @@ if(BUILD_BENCHMARKS)
     add_tickplant_benchmark(bench_mutex_queue     benchmarks/bench_mutex_queue.cpp)
     add_tickplant_benchmark(bench_spsc_queue      benchmarks/bench_spsc_queue.cpp)
     add_tickplant_benchmark(bench_timing_overhead benchmarks/bench_timing_overhead.cpp)
+
+    # FIX parser benchmark — needs nlohmann_json for the JSON comparison baseline
+    add_executable(bench_fix_parser
+        benchmarks/bench_fix_parser.cpp
+        src/fix_parser.cpp
+    )
+    target_include_directories(bench_fix_parser PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(bench_fix_parser PRIVATE
+        benchmark::benchmark_main
+        nlohmann_json::nlohmann_json
+        Threads::Threads
+    )
+    target_compile_options(bench_fix_parser PRIVATE
+        -O3 -march=native
+    )
 endif()
 
 # For macOS, link system libraries
