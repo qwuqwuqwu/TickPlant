@@ -222,10 +222,11 @@ int main(int argc, char* argv[]) {
     });
     g_arbitrage_engine->start();
 
-    // Start FIX simulator — begins producing L2 depth messages immediately
-    g_fix_simulator->start();
-    std::cout << "FIX feed simulator started (10 symbols, 20 updates/sec, "
-                 "snapshot every 5s)\n";
+    // FIX simulator temporarily disabled — synthetic prices cause large spreads
+    // against live feeds.  Re-enable by uncommenting the two lines below.
+    // g_fix_simulator->start();
+    // std::cout << "FIX feed simulator started (10 symbols, 20 updates/sec, "
+    //              "snapshot every 5s)\n";
 
     // Start the dashboard (Thread 1 - display)
     g_dashboard->set_update_interval(std::chrono::milliseconds(500)); // Update every 500ms
