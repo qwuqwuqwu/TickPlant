@@ -1,4 +1,6 @@
 #include "arbitrage_engine.hpp"
+#include "fix_parser.hpp"
+#include "order_book.hpp"
 #include "queue_latency_tracker.hpp"
 #include "thread_affinity.hpp"
 #include <iostream>
@@ -262,6 +264,35 @@ void ArbitrageEngine::calculate_arbitrage() {
     {
         std::lock_guard<std::mutex> opp_lock(opportunities_mutex_);
         opportunities_ = std::move(new_opportunities);
+    }
+}
+
+void ArbitrageEngine::update_fix_data(const FIXMessage& msg) {
+    if (!msg.is_market_data()) return;
+
+    const std::string sym(msg.symbol);
+
+    // ── (a) Update L2 OrderBook ────────────────────────────────────────────
+    {
+        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        auto it = fix_books_.find(sym);
+        if (it == fix_books_.end()) {
+            fix_books_.emplace(sym, std::make_unique<OrderBook>(sym, "FIX"));
+            it = fix_books_.find(sym);
+        }
+        if (msg.msg_type == FIXMsgType::MarketDataSnapshot) {
+            it->second->apply_snapshot(msg);
+        } else {
+            it->second->apply_update(msg);
+        }
+    }
+
+    // ── (b) Feed BBO to existing detection path ───────────────────────────
+    // to_ticker_data() already sets exchange="FIX" and copies symbol to string.
+    // This feeds the FIX simulator into calculate_arbitrage() alongside the
+    // four WebSocket producers until Phase 2.6 migrates to pure L2 detection.
+    if (auto td = msg.to_ticker_data()) {
+        update_market_data(*td);  // also calls cv_.notify_one()
     }
 }
 

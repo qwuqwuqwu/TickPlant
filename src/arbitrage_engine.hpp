@@ -4,11 +4,17 @@
 #include "exchange_queue.hpp"
 #include <thread>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <condition_variable>
+#include <unordered_map>
 #include <vector>
 #include <functional>
 #include <chrono>
+
+// Forward declarations — full definitions in fix_parser.hpp / order_book.hpp
+struct FIXMessage;
+class  OrderBook;
 
 // Callback for arbitrage opportunities
 using ArbitrageCallback = std::function<void(const ArbitrageOpportunity&)>;
@@ -26,6 +32,16 @@ public:
 
     // Update market data via per-exchange queues (thread-safe, lock-free push)
     void update_market_data(const TickerData& ticker);
+
+    // Accept a parsed FIX market data message from the FIX feed simulator.
+    // Routes to:
+    //   (a) the per-symbol L2 OrderBook for exchange "FIX"
+    //   (b) the existing BBO queue via FIXMessage::to_ticker_data() so the
+    //       current arbitrage detection path sees the FIX feed alongside the
+    //       four WebSocket producers.
+    // Thread-safe: may be called from the simulator thread concurrently with
+    // update_market_data() calls from WebSocket producer threads.
+    void update_fix_data(const FIXMessage& msg);
 
     // Set callback for when arbitrage opportunities are found
     void set_opportunity_callback(ArbitrageCallback callback);
@@ -52,6 +68,12 @@ public:
 private:
     // Shared queue for incoming data (all exchanges push to the same queue)
     SharedQueue incoming_queues_;
+
+    // L2 order books for the FIX feed — one per symbol (keyed by raw FIX symbol
+    // string, e.g. "BTCUSD").  Written by the FIX simulator thread; will be read
+    // by the calculation thread starting in Phase 2.6.
+    std::unordered_map<std::string, std::unique_ptr<OrderBook>> fix_books_;
+    mutable std::mutex                                           fix_books_mutex_;
 
     // Market data storage (only accessed by calculation thread after draining queues)
     MarketDataMap market_data_;

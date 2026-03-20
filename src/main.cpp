@@ -4,6 +4,7 @@
 #include "bybit_client.hpp"
 #include "dashboard.hpp"
 #include "arbitrage_engine.hpp"
+#include "fix_feed_simulator.hpp"
 #include <iostream>
 #include <signal.h>
 #include <vector>
@@ -17,6 +18,7 @@ std::unique_ptr<KrakenWebSocketClient> g_kraken_client;
 std::unique_ptr<BybitWebSocketClient> g_bybit_client;
 std::unique_ptr<TerminalDashboard> g_dashboard;
 std::unique_ptr<ArbitrageEngine> g_arbitrage_engine;
+std::unique_ptr<FIXFeedSimulator> g_fix_simulator;
 std::atomic<bool> g_shutdown(false);
 
 void signal_handler(int signal) {
@@ -110,8 +112,8 @@ int main(int argc, char* argv[]) {
         "ALGOUSDT"   // Algorand
     };
 
-    std::cout << "Monitoring " << symbols.size() << " cryptocurrency pairs across 4 exchanges:\n";
-    std::cout << "Binance.US + Coinbase + Kraken + Bybit\n\n";
+    std::cout << "Monitoring " << symbols.size() << " cryptocurrency pairs across 5 exchanges:\n";
+    std::cout << "Binance.US + Coinbase + Kraken + Bybit + FIX Simulator\n\n";
 
     // Set up callbacks to update dashboard and arbitrage engine when new data arrives
     g_binance_client->set_message_callback([&](const TickerData& ticker) {
@@ -136,6 +138,34 @@ int main(int argc, char* argv[]) {
 
     // Link dashboard to arbitrage engine so it can pull opportunities
     g_dashboard->set_arbitrage_engine(g_arbitrage_engine.get());
+
+    // ── FIX Feed Simulator (fifth producer) ───────────────────────────────
+    // Generates synthetic L2 depth messages for the same crypto symbols as the
+    // four WebSocket producers.  Feeds:
+    //   - an OrderBook keyed "FIX" for L2 depth (Phase 2.3)
+    //   - the existing BBO detection queue via to_ticker_data() so the arb
+    //     engine sees FIX as a fifth exchange today (migrated in Phase 2.6)
+    g_fix_simulator = std::make_unique<FIXFeedSimulator>("FIX");
+
+    // Mirror the main symbol list in FIX format (USD suffix, no T).
+    // normalize_symbol("BTCUSD") → "BTC", matching Binance "BTCUSDT" → "BTC".
+    g_fix_simulator->add_symbol({"BTCUSD",  65000.0, 0.001});
+    g_fix_simulator->add_symbol({"ETHUSD",   3500.0, 0.001});
+    g_fix_simulator->add_symbol({"SOLUSD",    140.0, 0.002});
+    g_fix_simulator->add_symbol({"LTCUSD",     85.0, 0.002});
+    g_fix_simulator->add_symbol({"XRPUSD",      0.52, 0.002});
+    g_fix_simulator->add_symbol({"ADAUSD",       0.45, 0.002});
+    g_fix_simulator->add_symbol({"ATOMUSD",     10.0, 0.002});
+    g_fix_simulator->add_symbol({"AVAXUSD",     35.0, 0.002});
+    g_fix_simulator->add_symbol({"LINKUSD",     14.0, 0.002});
+    g_fix_simulator->add_symbol({"UNIUSD",       8.0, 0.002});
+
+    g_fix_simulator->set_snapshot_interval_ms(5000);
+    g_fix_simulator->set_incremental_hz(20);  // 20 updates/sec across all symbols
+
+    g_fix_simulator->set_callback([&](const std::string& /*raw*/, const FIXMessage& msg) {
+        g_arbitrage_engine->update_fix_data(msg);
+    });
 
     std::cout << "Connecting to exchanges..." << std::endl;
 
@@ -174,6 +204,11 @@ int main(int argc, char* argv[]) {
     });
     g_arbitrage_engine->start();
 
+    // Start FIX simulator — begins producing L2 depth messages immediately
+    g_fix_simulator->start();
+    std::cout << "FIX feed simulator started (10 symbols, 20 updates/sec, "
+                 "snapshot every 5s)\n";
+
     // Start the dashboard (Thread 1 - display)
     g_dashboard->set_update_interval(std::chrono::milliseconds(500)); // Update every 500ms
     g_dashboard->start();
@@ -189,6 +224,10 @@ int main(int argc, char* argv[]) {
     std::cout << "\nShutting down..." << std::endl;
 
     // Cleanup
+    if (g_fix_simulator) {
+        g_fix_simulator->stop();
+    }
+
     if (g_arbitrage_engine) {
         g_arbitrage_engine->stop();
     }

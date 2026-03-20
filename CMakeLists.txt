@@ -30,6 +30,7 @@ add_executable(binance_dashboard
     src/arbitrage_engine.cpp
     src/fix_parser.cpp
     src/order_book.cpp
+    src/fix_feed_simulator.cpp
 )
 
 # Include directories
