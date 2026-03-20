@@ -273,10 +273,13 @@ std::string ArbitrageEngine::normalize_symbol(const std::string& symbol) const {
 
     // Handle Coinbase format (BTC-USD) -> normalize to base currency
     if (normalized.find('-') != std::string::npos) {
-        size_t dash_pos = normalized.find('-');
-        normalized = normalized.substr(0, dash_pos);
+        normalized = normalized.substr(0, normalized.find('-'));
     }
-    // Handle Binance format (BTCUSDT) -> normalize to base currency
+    // Handle Kraken format (BTC/USD) -> normalize to base currency
+    else if (normalized.find('/') != std::string::npos) {
+        normalized = normalized.substr(0, normalized.find('/'));
+    }
+    // Handle Binance/Bybit format (BTCUSDT) -> normalize to base currency
     else if (normalized.length() > 4 && normalized.substr(normalized.length() - 4) == "USDT") {
         normalized = normalized.substr(0, normalized.length() - 4);
     }
