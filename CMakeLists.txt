@@ -59,6 +59,35 @@ target_compile_definitions(binance_dashboard PRIVATE
     $<$<STREQUAL:${QUEUE_TYPE},MPSC>:USE_MPSC_QUEUE>
 )
 
+# ── Benchmarks ───────────────────────────────────────────────────────────────
+# Enable with: cmake .. -DBUILD_BENCHMARKS=ON
+# Requires google-benchmark in vcpkg.json (already added).
+option(BUILD_BENCHMARKS "Build Google Benchmark harnesses" OFF)
+
+if(BUILD_BENCHMARKS)
+    find_package(benchmark REQUIRED)
+
+    # Helper: create a benchmark executable with the right flags and includes.
+    function(add_tickplant_benchmark target source)
+        add_executable(${target} ${source})
+        target_include_directories(${target} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+        )
+        target_link_libraries(${target} PRIVATE
+            benchmark::benchmark_main   # already pulls in benchmark::benchmark
+            Threads::Threads
+        )
+        target_compile_options(${target} PRIVATE
+            -O3 -march=native
+        )
+    endfunction()
+
+    add_tickplant_benchmark(bench_mpsc_queue      benchmarks/bench_mpsc_queue.cpp)
+    add_tickplant_benchmark(bench_mutex_queue     benchmarks/bench_mutex_queue.cpp)
+    add_tickplant_benchmark(bench_spsc_queue      benchmarks/bench_spsc_queue.cpp)
+    add_tickplant_benchmark(bench_timing_overhead benchmarks/bench_timing_overhead.cpp)
+endif()
+
 # For macOS, link system libraries
 if(APPLE)
     find_library(COREFOUNDATION_LIBRARY CoreFoundation)

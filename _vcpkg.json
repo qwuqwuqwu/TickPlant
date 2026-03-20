@@ -8,6 +8,7 @@
     "boost-system",
     "boost-thread",
     "boost-chrono",
-    "boost-random"
+    "boost-random",
+    "benchmark"
   ]
 }
