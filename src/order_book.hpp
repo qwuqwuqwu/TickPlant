@@ -53,10 +53,19 @@ struct PriceLevel {
 
 // Immutable copy of the book state at a point in time.
 // Owns its data — safe to pass across threads and hold indefinitely.
+//
+// is_snapshot semantics (used by ArbitrageEngine::update_order_book):
+//   true  — full book replace: engine clears its book then inserts every level.
+//           (Binance @depth20@100ms always sends full partial-book; Bybit/Coinbase/
+//            Kraken initial snapshot.)
+//   false — incremental delta: engine applies each level individually.
+//           quantity == 0.0 signals DELETE this price level; quantity > 0 is
+//           INSERT/REPLACE.  (Bybit delta, Coinbase update, Kraken update.)
 struct OrderBookSnapshot {
     std::string              symbol;
     std::string              exchange;
     uint64_t                 timestamp_ms = 0;
+    bool                     is_snapshot  = true;   // true = full replace, false = delta
 
     std::vector<PriceLevel>  bids;   // descending price (index 0 = best bid)
     std::vector<PriceLevel>  asks;   // ascending  price (index 0 = best ask)

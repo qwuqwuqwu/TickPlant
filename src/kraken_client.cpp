@@ -3,6 +3,7 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <chrono>
 
 KrakenWebSocketClient::KrakenWebSocketClient()
     : connected_(false)
@@ -132,6 +133,11 @@ void KrakenWebSocketClient::set_message_callback(MessageCallback callback) {
     message_callback_ = callback;
 }
 
+void KrakenWebSocketClient::set_depth_callback(DepthCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    depth_callback_ = callback;
+}
+
 void KrakenWebSocketClient::send_subscribe_message(const std::vector<std::string>& symbols) {
     try {
         // Convert Binance symbols to Kraken format
@@ -140,21 +146,20 @@ void KrakenWebSocketClient::send_subscribe_message(const std::vector<std::string
             kraken_symbols.push_back(binance_to_kraken_symbol(symbol));
         }
 
-        // Build subscription message for Kraken v2 API
-        // Use "bbo" event_trigger for faster updates (triggered by best bid/offer changes)
+        // Subscribe to book channel — depth=10 gives top-10 levels per side.
+        // Kraken v2 sends one snapshot per symbol then incremental updates.
         json subscribe_msg = {
             {"method", "subscribe"},
             {"params", {
-                {"channel", "ticker"},
+                {"channel", "book"},
                 {"symbol", kraken_symbols},
-                {"event_trigger", "bbo"}
+                {"depth", 10}
             }}
         };
 
         std::string msg_str = subscribe_msg.dump();
         std::cout << "Sending Kraken subscription: " << msg_str << std::endl;
 
-        // Send the subscription message
         ws_->write(net::buffer(msg_str));
 
     } catch (const std::exception& e) {
@@ -206,18 +211,17 @@ void KrakenWebSocketClient::on_read(beast::error_code ec, std::size_t bytes_tran
 
     try {
         std::string message = beast::buffers_to_string(buffer_.data());
-        parse_ticker_message(message);
+        parse_depth_message(message);
     } catch (const std::exception& e) {
         std::cerr << "Kraken message parsing error: " << e.what() << std::endl;
     }
 }
 
-void KrakenWebSocketClient::parse_ticker_message(const std::string& message) {
+void KrakenWebSocketClient::parse_depth_message(const std::string& message) {
     try {
         auto j = json::parse(message);
 
-        // Kraken v2 sends various message types: method responses, channel data
-        // Subscription confirmation has "method": "subscribe" and "success": true
+        // Subscription confirmation: {"method":"subscribe","success":true,...}
         if (j.contains("method") && j["method"] == "subscribe") {
             if (j.contains("success") && j["success"] == true) {
                 std::cout << "Kraken subscription confirmed" << std::endl;
@@ -225,52 +229,112 @@ void KrakenWebSocketClient::parse_ticker_message(const std::string& message) {
             return;
         }
 
-        // Check if this is a ticker channel message
-        if (!j.contains("channel") || j["channel"] != "ticker") {
-            return;
-        }
+        // Heartbeat / status messages
+        if (j.contains("channel") && j["channel"] == "status") return;
+        if (j.contains("method") && j["method"] == "pong")      return;
 
-        // Check if we have data
-        if (!j.contains("data")) {
-            return;
-        }
+        // Must be a book channel message
+        if (!j.contains("channel") || j["channel"] != "book") return;
+        if (!j.contains("type") || !j.contains("data"))       return;
 
-        // Kraken v2 ticker format has "data" array with ticker updates
+        // "snapshot" = full book, "update" = incremental delta (qty==0.0 → delete)
+        std::string msg_type = j["type"].get<std::string>();
+        bool is_snap = (msg_type == "snapshot");
+        if (!is_snap && msg_type != "update") return;
+
         auto data_array = j["data"];
-        if (data_array.empty()) {
-            return;
-        }
+        if (data_array.empty()) return;
 
-        // Process each ticker update
-        for (const auto& ticker_data : data_array) {
-            // Parse ticker data
-            TickerData ticker;
+        auto now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
 
-            // Kraken uses "symbol" like "BTC/USD"
-            std::string symbol = ticker_data["symbol"].get<std::string>();
-            ticker.symbol = symbol;
+        for (const auto& item : data_array) {
+            if (!item.contains("symbol")) continue;
+            std::string sym = item["symbol"].get<std::string>();
 
-            // Kraken provides bid and ask as numbers
-            ticker.bid_price = ticker_data["bid"].get<double>();
-            ticker.ask_price = ticker_data["ask"].get<double>();
+            // ── Build OrderBookSnapshot ──────────────────────────────────────
+            // Kraken book levels: [{"price":65000.0,"qty":0.5},...] (numbers, not strings)
+            // qty == 0.0 signals delete for updates.
+            OrderBookSnapshot snap;
+            snap.symbol       = sym;
+            snap.exchange     = "Kraken";
+            snap.timestamp_ms = now_ms;
+            snap.is_snapshot  = is_snap;
 
-            // Kraken provides bid_qty and ask_qty
-            ticker.bid_quantity = ticker_data["bid_qty"].get<double>();
-            ticker.ask_quantity = ticker_data["ask_qty"].get<double>();
+            if (item.contains("bids")) {
+                for (const auto& lvl : item["bids"]) {
+                    double price = lvl["price"].get<double>();
+                    double qty   = lvl["qty"].get<double>();
+                    snap.bids.push_back({price, qty, 0});
+                }
+            }
+            if (item.contains("asks")) {
+                for (const auto& lvl : item["asks"]) {
+                    double price = lvl["price"].get<double>();
+                    double qty   = lvl["qty"].get<double>();
+                    snap.asks.push_back({price, qty, 0});
+                }
+            }
 
-            // Set timestamp
-            auto now = std::chrono::system_clock::now();
-            ticker.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now.time_since_epoch()
-            ).count();
+            // Kraken sends bids descending and asks ascending in snapshots, but
+            // updates may be in any order — sort to be safe.
+            std::sort(snap.bids.begin(), snap.bids.end(),
+                [](const PriceLevel& a, const PriceLevel& b){ return a.price > b.price; });
+            std::sort(snap.asks.begin(), snap.asks.end(),
+                [](const PriceLevel& a, const PriceLevel& b){ return a.price < b.price; });
 
-            // Mark as Kraken exchange
-            ticker.exchange = "Kraken";
+            // ── Maintain client-side local book for BBO extraction ───────────
+            auto it = local_books_.find(sym);
+            if (it == local_books_.end()) {
+                local_books_.emplace(sym, std::make_unique<OrderBook>(sym, "Kraken"));
+                it = local_books_.find(sym);
+            }
+            OrderBook& book = *it->second;
 
-            // Call the callback with the new ticker data
-            {
-                std::lock_guard<std::mutex> lock(callback_mutex_);
-                if (message_callback_) {
+            if (is_snap) {
+                book.clear();
+                for (const auto& lvl : snap.bids)
+                    if (lvl.quantity > 0.0)
+                        book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+                for (const auto& lvl : snap.asks)
+                    if (lvl.quantity > 0.0)
+                        book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+            } else {
+                for (const auto& lvl : snap.bids) {
+                    if (lvl.quantity == 0.0)
+                        book.delete_level(OrderBook::Side::Bid, lvl.price);
+                    else
+                        book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+                }
+                for (const auto& lvl : snap.asks) {
+                    if (lvl.quantity == 0.0)
+                        book.delete_level(OrderBook::Side::Ask, lvl.price);
+                    else
+                        book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+                }
+            }
+
+            // ── Fire callbacks ───────────────────────────────────────────────
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+
+            // L2 depth callback — feeds ws_books_ in ArbitrageEngine
+            if (depth_callback_ && !snap.empty()) {
+                depth_callback_(snap);
+            }
+
+            // BBO callback — backward-compat path (retired in Phase 2.6)
+            if (message_callback_) {
+                auto bbo = book.get_snapshot();
+                if (!bbo.empty()) {
+                    TickerData ticker;
+                    ticker.symbol       = sym;
+                    ticker.exchange     = "Kraken";
+                    ticker.timestamp_ms = now_ms;
+                    ticker.bid_price    = bbo.best_bid();
+                    ticker.ask_price    = bbo.best_ask();
+                    ticker.bid_quantity = bbo.bids.empty() ? 0.0 : bbo.bids.front().quantity;
+                    ticker.ask_quantity = bbo.asks.empty() ? 0.0 : bbo.asks.front().quantity;
                     message_callback_(ticker);
                 }
             }
@@ -280,33 +344,32 @@ void KrakenWebSocketClient::parse_ticker_message(const std::string& message) {
         std::cerr << "Kraken JSON parsing error: " << e.what() << std::endl;
         std::cerr << "Message: " << message << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Kraken ticker parsing error: " << e.what() << std::endl;
+        std::cerr << "Kraken depth parsing error: " << e.what() << std::endl;
     }
 }
 
 std::string KrakenWebSocketClient::binance_to_kraken_symbol(const std::string& symbol) {
-    // Convert "BTCUSDT" to "BTC/USD" (Kraken format)
-    // Handle common pairs
-    if (symbol == "BTCUSDT") return "BTC/USD";
-    if (symbol == "ETHUSDT") return "ETH/USD";
-    if (symbol == "ADAUSDT") return "ADA/USD";
-    if (symbol == "DOTUSDT") return "DOT/USD";
-    if (symbol == "SOLUSDT") return "SOL/USD";
+    // Convert "BTCUSDT" to "BTC/USD" (Kraken symbol format)
+    if (symbol == "BTCUSDT")   return "BTC/USD";
+    if (symbol == "ETHUSDT")   return "ETH/USD";
+    if (symbol == "ADAUSDT")   return "ADA/USD";
+    if (symbol == "DOTUSDT")   return "DOT/USD";
+    if (symbol == "SOLUSDT")   return "SOL/USD";
     if (symbol == "MATICUSDT") return "MATIC/USD";
-    if (symbol == "AVAXUSDT") return "AVAX/USD";
-    if (symbol == "LTCUSDT") return "LTC/USD";
-    if (symbol == "LINKUSDT") return "LINK/USD";
-    if (symbol == "XLMUSDT") return "XLM/USD";
-    if (symbol == "XRPUSDT") return "XRP/USD";
-    if (symbol == "UNIUSDT") return "UNI/USD";
-    if (symbol == "AAVEUSDT") return "AAVE/USD";
-    if (symbol == "ATOMUSDT") return "ATOM/USD";
-    if (symbol == "ALGOUSDT") return "ALGO/USD";
+    if (symbol == "AVAXUSDT")  return "AVAX/USD";
+    if (symbol == "LTCUSDT")   return "LTC/USD";
+    if (symbol == "LINKUSDT")  return "LINK/USD";
+    if (symbol == "XLMUSDT")   return "XLM/USD";
+    if (symbol == "XRPUSDT")   return "XRP/USD";
+    if (symbol == "UNIUSDT")   return "UNI/USD";
+    if (symbol == "AAVEUSDT")  return "AAVE/USD";
+    if (symbol == "ATOMUSDT")  return "ATOM/USD";
+    if (symbol == "ALGOUSDT")  return "ALGO/USD";
 
-    // Generic conversion: remove USDT and add /USD
+    // Generic: strip USDT, add /USD
     if (symbol.length() > 4 && symbol.substr(symbol.length() - 4) == "USDT") {
         return symbol.substr(0, symbol.length() - 4) + "/USD";
     }
 
-    return symbol;  // Return as-is if no conversion found
+    return symbol;
 }

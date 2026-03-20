@@ -113,7 +113,8 @@ int main(int argc, char* argv[]) {
     };
 
     std::cout << "Monitoring " << symbols.size() << " cryptocurrency pairs across 5 exchanges:\n";
-    std::cout << "Binance.US + Coinbase + Kraken + Bybit + FIX Simulator\n\n";
+    std::cout << "Binance (depth20) + Coinbase (level2) + Kraken (book/10)"
+                 " + Bybit (orderbook.50) + FIX Simulator\n\n";
 
     // Set up callbacks to update dashboard and arbitrage engine when new data arrives
 
@@ -128,19 +129,31 @@ int main(int argc, char* argv[]) {
         g_arbitrage_engine->update_order_book(snap);
     });
 
+    // Coinbase — Phase 2.5: level2 feed (snapshot + incremental updates)
     g_coinbase_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
         g_arbitrage_engine->update_market_data(ticker);
     });
+    g_coinbase_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        g_arbitrage_engine->update_order_book(snap);
+    });
 
+    // Kraken — Phase 2.5: book feed (depth=10, snapshot + incremental updates)
     g_kraken_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
         g_arbitrage_engine->update_market_data(ticker);
     });
+    g_kraken_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        g_arbitrage_engine->update_order_book(snap);
+    });
 
+    // Bybit — Phase 2.5: orderbook.50 feed (snapshot + incremental deltas)
     g_bybit_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
         g_arbitrage_engine->update_market_data(ticker);
+    });
+    g_bybit_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        g_arbitrage_engine->update_order_book(snap);
     });
 
     // Link dashboard to arbitrage engine so it can pull opportunities

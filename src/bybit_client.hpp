@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "order_book.hpp"
 #include <boost/beast/core.hpp>
 #include <boost/beast/ssl.hpp>
 #include <boost/beast/websocket.hpp>
@@ -12,6 +13,7 @@
 #include <atomic>
 #include <functional>
 #include <vector>
+#include <unordered_map>
 #include <mutex>
 #include <memory>
 
@@ -26,18 +28,25 @@ using json = nlohmann::json;
 class BybitWebSocketClient {
 public:
     using MessageCallback = std::function<void(const TickerData&)>;
+    using DepthCallback   = std::function<void(const OrderBookSnapshot&)>;
 
     BybitWebSocketClient();
     ~BybitWebSocketClient();
 
-    // Connect to Bybit WebSocket and subscribe to orderbook L1 (BBO)
+    // Connect to Bybit WebSocket and subscribe to orderbook.50 (L2 depth)
     bool connect(const std::vector<std::string>& symbols);
 
     // Disconnect and cleanup
     void disconnect();
 
-    // Set callback for when new ticker data arrives
+    // BBO callback — fires on every snapshot and delta with current best bid/ask.
+    // Kept for backward-compat with the BBO arbitrage path (retired in Phase 2.6).
     void set_message_callback(MessageCallback callback);
+
+    // L2 depth callback — fires on every snapshot (is_snapshot=true) and delta
+    // (is_snapshot=false, qty==0.0 means delete).  Used to maintain ws_books_ in
+    // ArbitrageEngine for the pure L2 detection path introduced in Phase 2.6.
+    void set_depth_callback(DepthCallback callback);
 
     // Check if client is connected
     bool is_connected() const { return connected_; }
@@ -56,20 +65,26 @@ private:
     std::atomic<uint64_t> message_count_;
 
     MessageCallback message_callback_;
+    DepthCallback   depth_callback_;
     std::mutex callback_mutex_;
 
     std::vector<std::string> subscribed_symbols_;
     beast::flat_buffer buffer_;
+
+    // Client-side L2 books — one per symbol (keyed by native Bybit symbol, e.g.
+    // "BTCUSDT").  Used to derive an accurate BBO after each incremental delta so
+    // the existing message_callback_ path stays live until Phase 2.6 retires it.
+    std::unordered_map<std::string, std::unique_ptr<OrderBook>> local_books_;
 
     // WebSocket operations
     void run_client();
     void do_read();
     void on_read(beast::error_code ec, std::size_t bytes_transferred);
 
-    // Parse Bybit orderbook L1 message
-    void parse_ticker_message(const std::string& message);
+    // Parse Bybit orderbook.50 snapshot/delta message
+    void parse_depth_message(const std::string& message);
 
-    // Convert symbol format (Bybit uses same as Binance, just prefix with topic)
+    // Return the orderbook.50 topic string for a Binance-format symbol
     std::string binance_to_bybit_topic(const std::string& symbol);
 
     // Send subscription message (max 10 args per request)

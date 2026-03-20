@@ -3,6 +3,7 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <chrono>
 
 CoinbaseWebSocketClient::CoinbaseWebSocketClient()
     : connected_(false)
@@ -60,7 +61,7 @@ bool CoinbaseWebSocketClient::connect(const std::vector<std::string>& symbols) {
         // Set WebSocket options
         ws_->set_option(websocket::stream_base::decorator(
             [](websocket::request_type& req) {
-                req.set(http::field::user_agent, "Binance-Dashboard/1.0");
+                req.set(http::field::user_agent, "TickPlant/1.0");
             }));
 
         // Perform WebSocket handshake
@@ -118,25 +119,29 @@ void CoinbaseWebSocketClient::set_message_callback(MessageCallback callback) {
     message_callback_ = callback;
 }
 
+void CoinbaseWebSocketClient::set_depth_callback(DepthCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    depth_callback_ = callback;
+}
+
 void CoinbaseWebSocketClient::send_subscribe_message(const std::vector<std::string>& symbols) {
     try {
-        // Convert Binance symbols to Coinbase format
+        // Convert Binance symbols to Coinbase product_id format
         std::vector<std::string> coinbase_symbols;
         for (const auto& symbol : symbols) {
             coinbase_symbols.push_back(binance_to_coinbase_symbol(symbol));
         }
 
-        // Build subscription message
+        // Subscribe to level2 channel for full L2 depth (snapshot + incremental updates)
         json subscribe_msg = {
             {"type", "subscribe"},
             {"product_ids", coinbase_symbols},
-            {"channel", "ticker"}
+            {"channel", "level2"}
         };
 
         std::string msg_str = subscribe_msg.dump();
         std::cout << "Sending Coinbase subscription: " << msg_str << std::endl;
 
-        // Send the subscription message
         ws_->write(net::buffer(msg_str));
 
     } catch (const std::exception& e) {
@@ -188,69 +193,134 @@ void CoinbaseWebSocketClient::on_read(beast::error_code ec, std::size_t bytes_tr
 
     try {
         std::string message = beast::buffers_to_string(buffer_.data());
-        parse_ticker_message(message);
+        parse_depth_message(message);
     } catch (const std::exception& e) {
         std::cerr << "Coinbase message parsing error: " << e.what() << std::endl;
     }
 }
 
-void CoinbaseWebSocketClient::parse_ticker_message(const std::string& message) {
+void CoinbaseWebSocketClient::parse_depth_message(const std::string& message) {
     try {
         auto j = json::parse(message);
 
-        // Coinbase sends various message types: subscriptions, ticker, etc.
-        if (!j.contains("events")) {
-            // Not a ticker data message (could be subscription confirmation)
-            if (j.contains("type") && j["type"] == "subscriptions") {
-                std::cout << "Coinbase subscription confirmed" << std::endl;
-            }
+        // Subscription confirmation: {"channel":"subscriptions",...} or
+        // events[0]["type"] == "subscribed"
+        if (j.contains("channel") && j["channel"] == "subscriptions") {
+            std::cout << "Coinbase subscription confirmed" << std::endl;
             return;
         }
 
-        // Coinbase ticker format has "events" array
+        // level2 data arrives as channel "l2_data" (Coinbase renames on the wire)
+        if (!j.contains("events")) return;
+
         auto events = j["events"];
-        if (events.empty()) {
-            return;
-        }
+        if (events.empty()) return;
 
-        // Process each event (typically just one per message)
+        auto now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+
         for (const auto& event : events) {
-            if (!event.contains("tickers")) {
+            if (!event.contains("type")) continue;
+            std::string event_type = event["type"].get<std::string>();
+
+            // Subscription confirmation embedded in events array
+            if (event_type == "subscribed") {
+                std::cout << "Coinbase level2 subscription confirmed" << std::endl;
                 continue;
             }
 
-            auto tickers = event["tickers"];
-            for (const auto& ticker_data : tickers) {
-                // Parse ticker data
-                TickerData ticker;
+            // "snapshot" = full book replace, "update" = incremental delta
+            bool is_snap = (event_type == "snapshot");
+            if (!is_snap && event_type != "update") continue;
 
-                // Coinbase uses "product_id" like "BTC-USD", convert to "BTCUSDT" format
-                std::string product_id = ticker_data["product_id"].get<std::string>();
-                ticker.symbol = product_id;  // Keep Coinbase format for now
+            if (!event.contains("product_id") || !event.contains("updates")) continue;
 
-                // Coinbase provides best_bid and best_ask
-                ticker.bid_price = std::stod(ticker_data["best_bid"].get<std::string>());
-                ticker.ask_price = std::stod(ticker_data["best_ask"].get<std::string>());
+            std::string product_id = event["product_id"].get<std::string>();
 
-                // Coinbase provides best_bid_quantity and best_ask_quantity
-                ticker.bid_quantity = std::stod(ticker_data["best_bid_quantity"].get<std::string>());
-                ticker.ask_quantity = std::stod(ticker_data["best_ask_quantity"].get<std::string>());
+            // ── Build OrderBookSnapshot from the updates array ───────────────
+            // Each update: {"side":"bid"|"offer","price_level":"65000","new_quantity":"0.5"}
+            // new_quantity "0" means delete.
+            OrderBookSnapshot snap;
+            snap.symbol       = product_id;
+            snap.exchange     = "Coinbase";
+            snap.timestamp_ms = now_ms;
+            snap.is_snapshot  = is_snap;
 
-                // Set timestamp
-                auto now = std::chrono::system_clock::now();
-                ticker.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now.time_since_epoch()
-                ).count();
+            for (const auto& upd : event["updates"]) {
+                if (!upd.contains("side") || !upd.contains("price_level") ||
+                    !upd.contains("new_quantity")) continue;
 
-                // Mark as Coinbase exchange
-                ticker.exchange = "Coinbase";
+                double price = std::stod(upd["price_level"].get<std::string>());
+                double qty   = std::stod(upd["new_quantity"].get<std::string>());
+                std::string side = upd["side"].get<std::string>();
 
-                // Call the callback with the new ticker data
-                {
-                    std::lock_guard<std::mutex> lock(callback_mutex_);
-                    if (message_callback_) {
-                        message_callback_(ticker);
-                    }
+                if (side == "bid") {
+                    snap.bids.push_back({price, qty, 0});
+                } else if (side == "offer") {
+                    snap.asks.push_back({price, qty, 0});
+                }
+            }
+
+            // Sort bids descending, asks ascending (Coinbase updates are unordered)
+            std::sort(snap.bids.begin(), snap.bids.end(),
+                [](const PriceLevel& a, const PriceLevel& b){ return a.price > b.price; });
+            std::sort(snap.asks.begin(), snap.asks.end(),
+                [](const PriceLevel& a, const PriceLevel& b){ return a.price < b.price; });
+
+            // ── Maintain client-side local book for BBO extraction ───────────
+            auto it = local_books_.find(product_id);
+            if (it == local_books_.end()) {
+                local_books_.emplace(product_id,
+                    std::make_unique<OrderBook>(product_id, "Coinbase"));
+                it = local_books_.find(product_id);
+            }
+            OrderBook& book = *it->second;
+
+            if (is_snap) {
+                book.clear();
+                for (const auto& lvl : snap.bids)
+                    if (lvl.quantity > 0.0)
+                        book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+                for (const auto& lvl : snap.asks)
+                    if (lvl.quantity > 0.0)
+                        book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+            } else {
+                for (const auto& lvl : snap.bids) {
+                    if (lvl.quantity == 0.0)
+                        book.delete_level(OrderBook::Side::Bid, lvl.price);
+                    else
+                        book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+                }
+                for (const auto& lvl : snap.asks) {
+                    if (lvl.quantity == 0.0)
+                        book.delete_level(OrderBook::Side::Ask, lvl.price);
+                    else
+                        book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+                }
+            }
+
+            // ── Fire callbacks ───────────────────────────────────────────────
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+
+            // L2 depth callback — feeds ws_books_ in ArbitrageEngine
+            if (depth_callback_ && !snap.empty()) {
+                depth_callback_(snap);
+            }
+
+            // BBO callback — backward-compat path (retired in Phase 2.6)
+            if (message_callback_) {
+                auto bbo = book.get_snapshot();
+                if (!bbo.empty()) {
+                    TickerData ticker;
+                    ticker.symbol       = product_id;
+                    ticker.exchange     = "Coinbase";
+                    ticker.timestamp_ms = now_ms;
+                    ticker.bid_price    = bbo.best_bid();
+                    ticker.ask_price    = bbo.best_ask();
+                    ticker.bid_quantity = bbo.bids.empty() ? 0.0 : bbo.bids.front().quantity;
+                    ticker.ask_quantity = bbo.asks.empty() ? 0.0 : bbo.asks.front().quantity;
+                    message_callback_(ticker);
                 }
             }
         }
@@ -258,34 +328,33 @@ void CoinbaseWebSocketClient::parse_ticker_message(const std::string& message) {
     } catch (const json::exception& e) {
         std::cerr << "Coinbase JSON parsing error: " << e.what() << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Coinbase ticker parsing error: " << e.what() << std::endl;
+        std::cerr << "Coinbase depth parsing error: " << e.what() << std::endl;
     }
 }
 
 std::string CoinbaseWebSocketClient::binance_to_coinbase_symbol(const std::string& symbol) {
-    // Convert "BTCUSDT" to "BTC-USD" (Coinbase format)
-    // Handle common pairs
-    if (symbol == "BTCUSDT") return "BTC-USD";
-    if (symbol == "ETHUSDT") return "ETH-USD";
-    if (symbol == "BNBUSDT") return "BNB-USD";  // Note: BNB may not be on Coinbase
-    if (symbol == "ADAUSDT") return "ADA-USD";
-    if (symbol == "DOTUSDT") return "DOT-USD";
-    if (symbol == "SOLUSDT") return "SOL-USD";
+    // Convert "BTCUSDT" to "BTC-USD" (Coinbase product_id format)
+    if (symbol == "BTCUSDT")   return "BTC-USD";
+    if (symbol == "ETHUSDT")   return "ETH-USD";
+    if (symbol == "BNBUSDT")   return "BNB-USD";
+    if (symbol == "ADAUSDT")   return "ADA-USD";
+    if (symbol == "DOTUSDT")   return "DOT-USD";
+    if (symbol == "SOLUSDT")   return "SOL-USD";
     if (symbol == "MATICUSDT") return "MATIC-USD";
-    if (symbol == "AVAXUSDT") return "AVAX-USD";
-    if (symbol == "LTCUSDT") return "LTC-USD";
-    if (symbol == "LINKUSDT") return "LINK-USD";
-    if (symbol == "XLMUSDT") return "XLM-USD";
-    if (symbol == "XRPUSDT") return "XRP-USD";
-    if (symbol == "UNIUSDT") return "UNI-USD";
-    if (symbol == "AAVEUSDT") return "AAVE-USD";
-    if (symbol == "ATOMUSDT") return "ATOM-USD";
-    if (symbol == "ALGOUSDT") return "ALGO-USD";
+    if (symbol == "AVAXUSDT")  return "AVAX-USD";
+    if (symbol == "LTCUSDT")   return "LTC-USD";
+    if (symbol == "LINKUSDT")  return "LINK-USD";
+    if (symbol == "XLMUSDT")   return "XLM-USD";
+    if (symbol == "XRPUSDT")   return "XRP-USD";
+    if (symbol == "UNIUSDT")   return "UNI-USD";
+    if (symbol == "AAVEUSDT")  return "AAVE-USD";
+    if (symbol == "ATOMUSDT")  return "ATOM-USD";
+    if (symbol == "ALGOUSDT")  return "ALGO-USD";
 
-    // Generic conversion: remove USDT and add -USD
+    // Generic: strip USDT, add -USD
     if (symbol.length() > 4 && symbol.substr(symbol.length() - 4) == "USDT") {
         return symbol.substr(0, symbol.length() - 4) + "-USD";
     }
 
-    return symbol;  // Return as-is if no conversion found
+    return symbol;
 }

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <sstream>
 #include <algorithm>
+#include <chrono>
 
 BybitWebSocketClient::BybitWebSocketClient()
     : connected_(false)
@@ -137,16 +138,20 @@ void BybitWebSocketClient::set_message_callback(MessageCallback callback) {
     message_callback_ = callback;
 }
 
+void BybitWebSocketClient::set_depth_callback(DepthCallback callback) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    depth_callback_ = callback;
+}
+
 void BybitWebSocketClient::send_subscribe_message(const std::vector<std::string>& symbols) {
     try {
-        // Convert Binance symbols to Bybit orderbook L1 topics
+        // Convert Binance symbols to Bybit orderbook.50 topics
         std::vector<std::string> topics;
         for (const auto& symbol : symbols) {
             topics.push_back(binance_to_bybit_topic(symbol));
         }
 
         // Bybit allows max 10 args per subscription request
-        // Split into batches if necessary
         const size_t BATCH_SIZE = 10;
         for (size_t i = 0; i < topics.size(); i += BATCH_SIZE) {
             size_t end = std::min(i + BATCH_SIZE, topics.size());
@@ -214,17 +219,17 @@ void BybitWebSocketClient::on_read(beast::error_code ec, std::size_t bytes_trans
 
     try {
         std::string message = beast::buffers_to_string(buffer_.data());
-        parse_ticker_message(message);
+        parse_depth_message(message);
     } catch (const std::exception& e) {
         std::cerr << "Bybit message parsing error: " << e.what() << std::endl;
     }
 }
 
-void BybitWebSocketClient::parse_ticker_message(const std::string& message) {
+void BybitWebSocketClient::parse_depth_message(const std::string& message) {
     try {
         auto j = json::parse(message);
 
-        // Handle subscription confirmation: {"success": true, "op": "subscribe", ...}
+        // Handle subscription confirmation / pong
         if (j.contains("op")) {
             std::string op = j["op"].get<std::string>();
             if (op == "subscribe") {
@@ -233,60 +238,104 @@ void BybitWebSocketClient::parse_ticker_message(const std::string& message) {
                 }
                 return;
             }
-            // Handle pong responses
-            if (op == "pong") {
-                return;
+            if (op == "pong") return;
+        }
+
+        // Must have a topic field
+        if (!j.contains("topic")) return;
+
+        std::string topic = j["topic"].get<std::string>();
+        if (topic.find("orderbook.50.") == std::string::npos) return;
+
+        // Extract the symbol (everything after "orderbook.50.")
+        const std::string PREFIX = "orderbook.50.";
+        std::string sym = topic.substr(PREFIX.size());
+
+        if (!j.contains("data") || !j.contains("type")) return;
+
+        // "snapshot" = full book replace, "delta" = incremental update
+        std::string msg_type = j["type"].get<std::string>();
+        bool is_snap = (msg_type == "snapshot");
+
+        auto data = j["data"];
+        if (!data.contains("b") || !data.contains("a")) return;
+
+        // Current wall-clock time
+        auto now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
+
+        // ── Build OrderBookSnapshot ──────────────────────────────────────────
+        OrderBookSnapshot snap;
+        snap.symbol       = sym;
+        snap.exchange     = "Bybit";
+        snap.timestamp_ms = now_ms;
+        snap.is_snapshot  = is_snap;
+
+        for (const auto& level : data["b"]) {
+            double price = std::stod(level[0].get<std::string>());
+            double qty   = std::stod(level[1].get<std::string>());
+            // qty == 0.0 signals delete for deltas; include in snap for engine
+            snap.bids.push_back({price, qty, 0});
+        }
+        for (const auto& level : data["a"]) {
+            double price = std::stod(level[0].get<std::string>());
+            double qty   = std::stod(level[1].get<std::string>());
+            snap.asks.push_back({price, qty, 0});
+        }
+
+        // ── Maintain client-side local book for BBO extraction ───────────────
+        // Ensures message_callback_ always carries accurate best bid/ask even
+        // between full snapshots (which Bybit only sends once at subscription).
+        auto it = local_books_.find(sym);
+        if (it == local_books_.end()) {
+            local_books_.emplace(sym, std::make_unique<OrderBook>(sym, "Bybit"));
+            it = local_books_.find(sym);
+        }
+        OrderBook& book = *it->second;
+
+        if (is_snap) {
+            book.clear();
+            for (const auto& lvl : snap.bids)
+                book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+            for (const auto& lvl : snap.asks)
+                book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+        } else {
+            for (const auto& lvl : snap.bids) {
+                if (lvl.quantity == 0.0)
+                    book.delete_level(OrderBook::Side::Bid, lvl.price);
+                else
+                    book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+            }
+            for (const auto& lvl : snap.asks) {
+                if (lvl.quantity == 0.0)
+                    book.delete_level(OrderBook::Side::Ask, lvl.price);
+                else
+                    book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
             }
         }
 
-        // Check if this is an orderbook message
-        if (!j.contains("topic")) {
-            return;
+        // ── Fire callbacks (both under one lock acquisition) ─────────────────
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+
+        // L2 depth callback — feeds ws_books_ in ArbitrageEngine
+        if (depth_callback_) {
+            depth_callback_(snap);
         }
 
-        std::string topic = j["topic"].get<std::string>();
-        if (topic.find("orderbook.1.") == std::string::npos) {
-            return;  // Not an orderbook L1 message
-        }
-
-        // Check if we have data
-        if (!j.contains("data")) {
-            return;
-        }
-
-        auto data = j["data"];
-
-        // Validate bid and ask arrays exist and are non-empty
-        if (!data.contains("b") || !data.contains("a") ||
-            data["b"].empty() || data["a"].empty()) {
-            return;
-        }
-
-        // Parse orderbook L1 data
-        // Format: {"s": "BTCUSDT", "b": [["price", "size"]], "a": [["price", "size"]], ...}
-        TickerData ticker;
-
-        ticker.symbol = data["s"].get<std::string>();
-
-        // BBO: first (and only) entry in bid/ask arrays
-        ticker.bid_price = std::stod(data["b"][0][0].get<std::string>());
-        ticker.bid_quantity = std::stod(data["b"][0][1].get<std::string>());
-        ticker.ask_price = std::stod(data["a"][0][0].get<std::string>());
-        ticker.ask_quantity = std::stod(data["a"][0][1].get<std::string>());
-
-        // Set timestamp
-        auto now = std::chrono::system_clock::now();
-        ticker.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()
-        ).count();
-
-        // Mark as Bybit exchange
-        ticker.exchange = "Bybit";
-
-        // Call the callback with the new ticker data
-        {
-            std::lock_guard<std::mutex> lock(callback_mutex_);
-            if (message_callback_) {
+        // BBO callback — backward-compat path (retired in Phase 2.6)
+        // Extract current best bid/ask from the local book after the update.
+        if (message_callback_) {
+            auto bbo = book.get_snapshot();
+            if (!bbo.empty()) {
+                TickerData ticker;
+                ticker.symbol       = sym;
+                ticker.exchange     = "Bybit";
+                ticker.timestamp_ms = now_ms;
+                ticker.bid_price    = bbo.best_bid();
+                ticker.ask_price    = bbo.best_ask();
+                ticker.bid_quantity = bbo.bids.empty() ? 0.0 : bbo.bids.front().quantity;
+                ticker.ask_quantity = bbo.asks.empty() ? 0.0 : bbo.asks.front().quantity;
                 message_callback_(ticker);
             }
         }
@@ -295,12 +344,12 @@ void BybitWebSocketClient::parse_ticker_message(const std::string& message) {
         std::cerr << "Bybit JSON parsing error: " << e.what() << std::endl;
         std::cerr << "Message: " << message << std::endl;
     } catch (const std::exception& e) {
-        std::cerr << "Bybit ticker parsing error: " << e.what() << std::endl;
+        std::cerr << "Bybit depth parsing error: " << e.what() << std::endl;
     }
 }
 
 std::string BybitWebSocketClient::binance_to_bybit_topic(const std::string& symbol) {
-    // Bybit uses the same symbol format as Binance (BTCUSDT)
-    // We subscribe to orderbook L1 (BBO only) for each symbol
-    return "orderbook.1." + symbol;
+    // Bybit uses the same symbol format as Binance (BTCUSDT).
+    // Subscribe to orderbook.50 for 50-level L2 depth (snapshot + incremental deltas).
+    return "orderbook.50." + symbol;
 }

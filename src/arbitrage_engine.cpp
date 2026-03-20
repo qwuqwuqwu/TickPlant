@@ -278,11 +278,32 @@ void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
     }
 
     OrderBook& book = *it->second;
-    book.clear();
-    for (const auto& level : snap.bids)
-        book.set_level(OrderBook::Side::Bid, level.price, level.quantity, level.order_count);
-    for (const auto& level : snap.asks)
-        book.set_level(OrderBook::Side::Ask, level.price, level.quantity, level.order_count);
+
+    if (snap.is_snapshot) {
+        // Full replace — clear then repopulate from every level in the snapshot.
+        // Used by Binance (@depth20@100ms always sends complete partial book) and
+        // the initial snapshot from Bybit / Coinbase / Kraken.
+        book.clear();
+        for (const auto& level : snap.bids)
+            book.set_level(OrderBook::Side::Bid, level.price, level.quantity, level.order_count);
+        for (const auto& level : snap.asks)
+            book.set_level(OrderBook::Side::Ask, level.price, level.quantity, level.order_count);
+    } else {
+        // Incremental delta — apply each changed level individually.
+        // quantity == 0.0 means "delete this price level" (Bybit/Coinbase/Kraken convention).
+        for (const auto& level : snap.bids) {
+            if (level.quantity == 0.0)
+                book.delete_level(OrderBook::Side::Bid, level.price);
+            else
+                book.set_level(OrderBook::Side::Bid, level.price, level.quantity, level.order_count);
+        }
+        for (const auto& level : snap.asks) {
+            if (level.quantity == 0.0)
+                book.delete_level(OrderBook::Side::Ask, level.price);
+            else
+                book.set_level(OrderBook::Side::Ask, level.price, level.quantity, level.order_count);
+        }
+    }
     // Note: does NOT call update_market_data() — BBO is already pushed by the
     // client's MessageCallback.  Two separate calls, one queue entry, no duplication.
 }
