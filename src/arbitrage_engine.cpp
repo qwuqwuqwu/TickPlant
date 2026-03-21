@@ -2,6 +2,7 @@
 #include "fix_parser.hpp"
 #include "order_book.hpp"
 #include "thread_affinity.hpp"
+#include "metrics.hpp"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
@@ -59,31 +60,39 @@ void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
 
         OrderBook& book = *it->second;
 
-        if (snap.is_snapshot) {
-            // Full replace — clear then repopulate.
-            // Binance (@depth20@100ms always complete), and initial snapshot from
-            // Bybit / Coinbase / Kraken.
-            book.clear();
-            for (const auto& lvl : snap.bids)
-                book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
-            for (const auto& lvl : snap.asks)
-                book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
-        } else {
-            // Incremental delta — quantity == 0.0 means "delete this price level".
-            for (const auto& lvl : snap.bids) {
-                if (lvl.quantity == 0.0)
-                    book.delete_level(OrderBook::Side::Bid, lvl.price);
-                else
+        {
+            ScopedNsTimer ob_timer([&](double ns){
+                Metrics::instance().record_orderbook_update(snap.exchange, ns);
+            });
+
+            if (snap.is_snapshot) {
+                // Full replace — clear then repopulate.
+                // Binance (@depth20@100ms always complete), and initial snapshot from
+                // Bybit / Coinbase / Kraken.
+                book.clear();
+                for (const auto& lvl : snap.bids)
                     book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
-            }
-            for (const auto& lvl : snap.asks) {
-                if (lvl.quantity == 0.0)
-                    book.delete_level(OrderBook::Side::Ask, lvl.price);
-                else
+                for (const auto& lvl : snap.asks)
                     book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+            } else {
+                // Incremental delta — quantity == 0.0 means "delete this price level".
+                for (const auto& lvl : snap.bids) {
+                    if (lvl.quantity == 0.0)
+                        book.delete_level(OrderBook::Side::Bid, lvl.price);
+                    else
+                        book.set_level(OrderBook::Side::Bid, lvl.price, lvl.quantity, lvl.order_count);
+                }
+                for (const auto& lvl : snap.asks) {
+                    if (lvl.quantity == 0.0)
+                        book.delete_level(OrderBook::Side::Ask, lvl.price);
+                    else
+                        book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
+                }
             }
         }
     }
+
+    Metrics::instance().record_message(snap.exchange, snap.is_snapshot);
 
     // Wake the calculation thread
     books_dirty_ = true;
@@ -102,11 +111,17 @@ void ArbitrageEngine::update_fix_data(const FIXMessage& msg) {
             fix_books_.emplace(sym, std::make_unique<OrderBook>(sym, "FIX"));
             it = fix_books_.find(sym);
         }
-        if (msg.msg_type == FIXMsgType::MarketDataSnapshot) {
-            it->second->apply_snapshot(msg);
-        } else {
-            it->second->apply_update(msg);
+        bool is_snapshot = (msg.msg_type == FIXMsgType::MarketDataSnapshot);
+        {
+            ScopedNsTimer fix_timer([](double ns){
+                Metrics::instance().record_parse_latency("fix", ns);
+            });
+            if (is_snapshot)
+                it->second->apply_snapshot(msg);
+            else
+                it->second->apply_update(msg);
         }
+        Metrics::instance().record_message("FIX", is_snapshot);
     }
 
     // Wake the calculation thread
@@ -217,8 +232,14 @@ void ArbitrageEngine::calculate_arbitrage() {
         for (const auto& [key, book] : ws_books_) {
             auto snap = book->get_snapshot();
             if (snap.empty()) continue;
+            double staleness_ms = static_cast<double>(now_ms - snap.timestamp_ms);
+            Metrics::instance().set_book_staleness(snap.exchange, snap.symbol, staleness_ms);
+            Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "bid",
+                                               static_cast<double>(snap.bids.size()));
+            Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "ask",
+                                               static_cast<double>(snap.asks.size()));
             // Skip books not updated in the last 500 ms — feed may have dropped
-            if (now_ms - snap.timestamp_ms > 500) continue;
+            if (staleness_ms > 500) continue;
             std::string norm = normalize_symbol(snap.symbol);
             by_symbol[norm].emplace_back(snap.exchange, std::move(snap));
         }
@@ -229,7 +250,13 @@ void ArbitrageEngine::calculate_arbitrage() {
         for (const auto& [sym, book] : fix_books_) {
             auto snap = book->get_snapshot();
             if (snap.empty()) continue;
-            if (now_ms - snap.timestamp_ms > 500) continue;
+            double staleness_ms = static_cast<double>(now_ms - snap.timestamp_ms);
+            Metrics::instance().set_book_staleness("FIX", sym, staleness_ms);
+            Metrics::instance().set_book_depth("FIX", sym, "bid",
+                                               static_cast<double>(snap.bids.size()));
+            Metrics::instance().set_book_depth("FIX", sym, "ask",
+                                               static_cast<double>(snap.asks.size()));
+            if (staleness_ms > 500) continue;
             std::string norm = normalize_symbol(sym);
             by_symbol[norm].emplace_back("FIX", std::move(snap));
         }
@@ -268,6 +295,7 @@ void ArbitrageEngine::calculate_arbitrage() {
                             opp.timestamp_ms  = now_ms;
                             new_opportunities.push_back(opp);
                             opportunity_count_++;
+                            Metrics::instance().record_arb_detection(ex1, ex2, norm_sym);
 
                             {
                                 std::lock_guard<std::mutex> cb(callback_mutex_);
@@ -297,6 +325,7 @@ void ArbitrageEngine::calculate_arbitrage() {
                             opp.timestamp_ms  = now_ms;
                             new_opportunities.push_back(opp);
                             opportunity_count_++;
+                            Metrics::instance().record_arb_detection(ex2, ex1, norm_sym);
 
                             {
                                 std::lock_guard<std::mutex> cb(callback_mutex_);

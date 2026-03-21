@@ -9,6 +9,7 @@
     "boost-thread",
     "boost-chrono",
     "boost-random",
-    "benchmark"
+    "benchmark",
+    "prometheus-cpp"
   ]
 }

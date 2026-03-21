@@ -5,6 +5,7 @@
 #include "dashboard.hpp"
 #include "arbitrage_engine.hpp"
 #include "fix_feed_simulator.hpp"
+#include "metrics.hpp"
 #include <iostream>
 #include <signal.h>
 #include <vector>
@@ -129,6 +130,10 @@ int main(int argc, char* argv[]) {
         g_dashboard->update_market_data(ticker);
     });
     g_binance_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        ScopedNsTimer t([&snap](double ns) {
+            Metrics::instance().record_e2e_latency(snap.exchange, ns);
+            Metrics::instance().record_parse_latency("json", ns);
+        });
         g_arbitrage_engine->update_order_book(snap);
     });
 
@@ -137,6 +142,10 @@ int main(int argc, char* argv[]) {
         g_dashboard->update_market_data(ticker);
     });
     g_coinbase_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        ScopedNsTimer t([&snap](double ns) {
+            Metrics::instance().record_e2e_latency(snap.exchange, ns);
+            Metrics::instance().record_parse_latency("json", ns);
+        });
         g_arbitrage_engine->update_order_book(snap);
     });
 
@@ -145,6 +154,10 @@ int main(int argc, char* argv[]) {
         g_dashboard->update_market_data(ticker);
     });
     g_kraken_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        ScopedNsTimer t([&snap](double ns) {
+            Metrics::instance().record_e2e_latency(snap.exchange, ns);
+            Metrics::instance().record_parse_latency("json", ns);
+        });
         g_arbitrage_engine->update_order_book(snap);
     });
 
@@ -153,6 +166,10 @@ int main(int argc, char* argv[]) {
         g_dashboard->update_market_data(ticker);
     });
     g_bybit_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+        ScopedNsTimer t([&snap](double ns) {
+            Metrics::instance().record_e2e_latency(snap.exchange, ns);
+            Metrics::instance().record_parse_latency("json", ns);
+        });
         g_arbitrage_engine->update_order_book(snap);
     });
 
@@ -213,6 +230,9 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Connected successfully! Starting arbitrage engine and dashboard..." << std::endl;
     std::this_thread::sleep_for(std::chrono::seconds(2));  // Wait a bit for data to flow
+
+    // Start Prometheus metrics HTTP server (pull model, port 9090)
+    Metrics::instance().start(9090);
 
     // Start the arbitrage engine (Thread 2)
     g_arbitrage_engine->set_min_profit_bps(0.1);  // 0.1 basis points minimum profit

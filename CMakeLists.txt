@@ -18,6 +18,7 @@ find_package(Threads REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system thread)
+find_package(prometheus-cpp CONFIG REQUIRED)
 
 # Add executable
 add_executable(binance_dashboard
@@ -31,6 +32,7 @@ add_executable(binance_dashboard
     src/fix_parser.cpp
     src/order_book.cpp
     src/fix_feed_simulator.cpp
+    src/metrics.cpp
 )
 
 # Include directories
@@ -47,6 +49,8 @@ target_link_libraries(binance_dashboard PRIVATE
     Boost::system
     Boost::thread
     Threads::Threads
+    prometheus-cpp::core
+    prometheus-cpp::pull
 )
 
 # Compiler flags for performance
