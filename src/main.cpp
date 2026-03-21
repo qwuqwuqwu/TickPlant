@@ -6,6 +6,7 @@
 #include "arbitrage_engine.hpp"
 #include "fix_feed_simulator.hpp"
 #include "metrics.hpp"
+#include "env_loader.hpp"
 #include <iostream>
 #include <signal.h>
 #include <vector>
@@ -60,6 +61,9 @@ void setup_signal_handlers() {
 }
 
 int main(int argc, char* argv[]) {
+    // Load .env before anything else so getenv() calls find the credentials
+    load_dotenv();
+
     // Parse command-line arguments
     int max_reports = 0;  // 0 = unlimited (default)
     for (int i = 1; i < argc; i++) {

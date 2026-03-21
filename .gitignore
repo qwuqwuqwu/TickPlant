@@ -55,6 +55,11 @@ _deps
 # vcpkg
 vcpkg_installed/
 
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+
 # Other
 *.log
 .cache/
