@@ -227,6 +227,17 @@ void ArbitrageEngine::calculate_arbitrage() {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count());
 
+    // Per-exchange staleness threshold.
+    // Binance @depth20@100ms only emits when the book actually changes — on
+    // low-liquidity symbols (XLM, ALGO, UNI, …) the stream can legitimately go
+    // quiet for 10–20 s.  Using 500 ms would incorrectly discard those books.
+    // All other feeds (Coinbase level2, Kraken book/10, Bybit orderbook.50, FIX)
+    // push incremental updates continuously; 500 ms there is a reliable dead-feed
+    // detector.
+    auto staleness_limit_ms = [](const std::string& exchange) -> double {
+        return (exchange == "Binance") ? 30'000.0 : 500.0;
+    };
+
     {
         std::lock_guard<std::mutex> lk(ws_books_mutex_);
         for (const auto& [key, book] : ws_books_) {
@@ -238,8 +249,7 @@ void ArbitrageEngine::calculate_arbitrage() {
                                                static_cast<double>(snap.bids.size()));
             Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "ask",
                                                static_cast<double>(snap.asks.size()));
-            // Skip books not updated in the last 500 ms — feed may have dropped
-            if (staleness_ms > 500) continue;
+            if (staleness_ms > staleness_limit_ms(snap.exchange)) continue;
             std::string norm = normalize_symbol(snap.symbol);
             by_symbol[norm].emplace_back(snap.exchange, std::move(snap));
         }
@@ -256,7 +266,7 @@ void ArbitrageEngine::calculate_arbitrage() {
                                                static_cast<double>(snap.bids.size()));
             Metrics::instance().set_book_depth("FIX", sym, "ask",
                                                static_cast<double>(snap.asks.size()));
-            if (staleness_ms > 500) continue;
+            if (staleness_ms > staleness_limit_ms("FIX")) continue;
             std::string norm = normalize_symbol(sym);
             by_symbol[norm].emplace_back("FIX", std::move(snap));
         }
