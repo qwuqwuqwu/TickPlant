@@ -228,14 +228,17 @@ void ArbitrageEngine::calculate_arbitrage() {
             std::chrono::system_clock::now().time_since_epoch()).count());
 
     // Per-exchange staleness threshold.
-    // Binance @depth20@100ms only emits when the book actually changes — on
-    // low-liquidity symbols (XLM, ALGO, UNI, …) the stream can legitimately go
-    // quiet for 10–20 s.  Using 500 ms would incorrectly discard those books.
-    // All other feeds (Coinbase level2, Kraken book/10, Bybit orderbook.50, FIX)
-    // push incremental updates continuously; 500 ms there is a reliable dead-feed
-    // detector.
+    // Binance @depth20@100ms and Kraken book/10 only emit when the book
+    // actually changes.  On low-liquidity symbols (MATIC, ALGO, DOT, …) both
+    // feeds can legitimately go quiet for 10–30 s.  500 ms would incorrectly
+    // discard those books.
+    // Coinbase level2 and Bybit orderbook.50 push every change immediately;
+    // 500 ms there is a reliable dead-feed detector.
+    // FIX is synthetic — it is only active during burst windows and goes
+    // intentionally silent between them; 500 ms catches a truly dead burst.
     auto staleness_limit_ms = [](const std::string& exchange) -> double {
-        return (exchange == "Binance") ? 30'000.0 : 500.0;
+        if (exchange == "Binance" || exchange == "Kraken") return 30'000.0;
+        return 500.0;
     };
 
     {
