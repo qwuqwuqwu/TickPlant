@@ -115,6 +115,7 @@ void ArbitrageEngine::update_fix_data(const FIXMessage& msg) {
         {
             ScopedNsTimer fix_timer([](double ns){
                 Metrics::instance().record_parse_latency("fix", ns);
+                Metrics::instance().record_orderbook_update("FIX", ns);
             });
             if (is_snapshot)
                 it->second->apply_snapshot(msg);

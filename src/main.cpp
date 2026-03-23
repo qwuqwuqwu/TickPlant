@@ -262,6 +262,9 @@ int main(int argc, char* argv[]) {
     });
 
     g_fix_simulator->set_callback([&](const std::string& /*raw*/, const FIXMessage& msg) {
+        ScopedNsTimer t([](double ns) {
+            Metrics::instance().record_e2e_latency("FIX", ns);
+        });
         g_arbitrage_engine->update_fix_data(msg);
     });
 
