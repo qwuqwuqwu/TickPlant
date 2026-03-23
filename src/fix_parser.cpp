@@ -252,15 +252,31 @@ static std::string build_fix_message(
     int                         seq_num,
     char                        delim)
 {
+    // ── SendingTime (tag 52): current UTC, FIX format YYYYMMDD-HH:MM:SS.sss ──
+    const auto   now_tp  = std::chrono::system_clock::now();
+    const auto   now_tt  = std::chrono::system_clock::to_time_t(now_tp);
+    const auto   now_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               now_tp.time_since_epoch()) % 1000;
+    std::tm      gmt{};
+#ifdef _WIN32
+    gmtime_s(&gmt, &now_tt);
+#else
+    gmtime_r(&now_tt, &gmt);
+#endif
+    char ts_buf[24];
+    std::strftime(ts_buf, sizeof(ts_buf), "%Y%m%d-%H:%M:%S", &gmt);
+    std::snprintf(ts_buf + 15, sizeof(ts_buf) - 15, ".%03d",
+                  static_cast<int>(now_ms.count()));
+
     // ── Build body (tag 35 onward, before the 10= checksum field) ─────────
     std::ostringstream body;
-    body << "35=" << msg_type_str        << delim
-         << "34=" << seq_num             << delim
-         << "49=SIMULATOR"               << delim
-         << "56=CLIENT"                  << delim
-         << "52=20240315-10:30:00.000"   << delim
-         << "55=" << symbol              << delim
-         << "268=" << entries.size()     << delim;
+    body << "35=" << msg_type_str    << delim
+         << "34=" << seq_num         << delim
+         << "49=SIMULATOR"           << delim
+         << "56=CLIENT"              << delim
+         << "52=" << ts_buf          << delim
+         << "55=" << symbol          << delim
+         << "268=" << entries.size() << delim;
 
     for (const auto& e : entries) {
         if (msg_type_str == "X")

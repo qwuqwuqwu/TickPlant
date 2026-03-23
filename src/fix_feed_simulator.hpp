@@ -86,6 +86,15 @@ public:
     // disable burst mode (default).  Must be called before start().
     void set_burst_params(int interval_ms, int multiplier, int duration_ms);
 
+    // Price oracle — called once per symbol per loop iteration to anchor the
+    // simulator's mid price to the live market.  The argument is the FIX symbol
+    // (e.g. "BTCUSD").  Return 0.0 if no price is available yet; the simulator
+    // will keep its last known mid until a valid price arrives.
+    // Without an oracle the simulator random-walks from its initial mid_price
+    // and will diverge from live prices over time.
+    using PriceOracle = std::function<double(const std::string& fix_symbol)>;
+    void set_price_oracle(PriceOracle oracle);
+
     // Callback invoked for every generated message.
     void set_callback(MessageCallback cb);
 
@@ -115,6 +124,7 @@ private:
     int                      burst_interval_ms_    = 0;   // 0 = disabled
     int                      burst_multiplier_     = 10;
     int                      burst_duration_ms_    = 2000;
+    PriceOracle              oracle_;
 
     std::thread       thread_;
     std::atomic<bool> running_{false};

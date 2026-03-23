@@ -12,6 +12,29 @@
 #include <vector>
 #include <string>
 #include <thread>
+#include <mutex>
+#include <unordered_map>
+
+// ── Shared live price map ─────────────────────────────────────────────────────
+// Updated by every WebSocket depth callback; read by the FIX simulator oracle.
+// Keyed by FIX-convention symbol: "BTCUSD", "ETHUSD", etc.
+// (USDT pairs strip the trailing 'T'; slash/dash separators are removed.)
+std::unordered_map<std::string, double> g_live_mid;
+std::mutex                              g_live_mid_mutex;
+
+// Normalise any exchange symbol format to the FIX-convention key used in g_live_mid.
+//   "BTCUSDT" -> "BTCUSD"   (Binance/Bybit)
+//   "BTC-USD" -> "BTCUSD"   (Coinbase)
+//   "BTC/USD" -> "BTCUSD"   (Kraken)
+static std::string to_fix_key(std::string s) {
+    // Strip separator characters
+    s.erase(std::remove(s.begin(), s.end(), '/'), s.end());
+    s.erase(std::remove(s.begin(), s.end(), '-'), s.end());
+    // BTCUSDT -> BTCUSD
+    if (s.size() > 4 && s.substr(s.size() - 4) == "USDT")
+        s.pop_back();
+    return s;
+}
 
 // Global variables for signal handling
 std::unique_ptr<BinanceWebSocketClient> g_binance_client;
@@ -138,11 +161,22 @@ int main(int argc, char* argv[]) {
     //   depth_callback_   → L2 book update + arb detection (OrderBookSnapshot)
     // ArbitrageEngine no longer receives TickerData; detection is pure L2.
 
+    // Helper: update the shared live-price map from any depth snapshot.
+    // Called inside every exchange's depth callback before the book update.
+    auto update_live_mid = [](const OrderBookSnapshot& snap) {
+        if (!snap.bids.empty() && !snap.asks.empty()) {
+            const double mid = (snap.best_bid() + snap.best_ask()) / 2.0;
+            std::lock_guard<std::mutex> lk(g_live_mid_mutex);
+            g_live_mid[to_fix_key(snap.symbol)] = mid;
+        }
+    };
+
     // Binance — @depth20@100ms (always full partial-book snapshot)
     g_binance_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
     });
-    g_binance_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+    g_binance_client->set_depth_callback([&, update_live_mid](const OrderBookSnapshot& snap) {
+        update_live_mid(snap);
         ScopedNsTimer t([&snap](double ns) {
             Metrics::instance().record_e2e_latency(snap.exchange, ns);
             Metrics::instance().record_parse_latency("json", ns);
@@ -154,7 +188,8 @@ int main(int argc, char* argv[]) {
     g_coinbase_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
     });
-    g_coinbase_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+    g_coinbase_client->set_depth_callback([&, update_live_mid](const OrderBookSnapshot& snap) {
+        update_live_mid(snap);
         ScopedNsTimer t([&snap](double ns) {
             Metrics::instance().record_e2e_latency(snap.exchange, ns);
             Metrics::instance().record_parse_latency("json", ns);
@@ -166,7 +201,8 @@ int main(int argc, char* argv[]) {
     g_kraken_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
     });
-    g_kraken_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+    g_kraken_client->set_depth_callback([&, update_live_mid](const OrderBookSnapshot& snap) {
+        update_live_mid(snap);
         ScopedNsTimer t([&snap](double ns) {
             Metrics::instance().record_e2e_latency(snap.exchange, ns);
             Metrics::instance().record_parse_latency("json", ns);
@@ -178,7 +214,8 @@ int main(int argc, char* argv[]) {
     g_bybit_client->set_message_callback([&](const TickerData& ticker) {
         g_dashboard->update_market_data(ticker);
     });
-    g_bybit_client->set_depth_callback([&](const OrderBookSnapshot& snap) {
+    g_bybit_client->set_depth_callback([&, update_live_mid](const OrderBookSnapshot& snap) {
+        update_live_mid(snap);
         ScopedNsTimer t([&snap](double ns) {
             Metrics::instance().record_e2e_latency(snap.exchange, ns);
             Metrics::instance().record_parse_latency("json", ns);
@@ -213,6 +250,16 @@ int main(int argc, char* argv[]) {
 
     if (burst_interval_ms > 0)
         g_fix_simulator->set_burst_params(burst_interval_ms, burst_multiplier, burst_duration_ms);
+
+    // Oracle: look up the current live mid price for a FIX symbol.
+    // The FIX simulator anchors its current_mid to this value each tick,
+    // so generated prices stay close to real market prices.
+    // price_offset_bps on each SimulatedSymbol then adds the arb signal.
+    g_fix_simulator->set_price_oracle([](const std::string& fix_symbol) -> double {
+        std::lock_guard<std::mutex> lk(g_live_mid_mutex);
+        auto it = g_live_mid.find(fix_symbol);
+        return (it != g_live_mid.end()) ? it->second : 0.0;
+    });
 
     g_fix_simulator->set_callback([&](const std::string& /*raw*/, const FIXMessage& msg) {
         g_arbitrage_engine->update_fix_data(msg);
