@@ -2,9 +2,14 @@
 #include <iostream>
 
 // ─── Bucket boundaries ────────────────────────────────────────────────────────
-// [100 ns, 500 ns, 1 µs, 2.5 µs, 5 µs, 10 µs, 25 µs, 50 µs, 100 µs]
+// Sub-µs parse path:   100 ns → 1 µs   (FIX apply_snapshot, fast JSON paths)
+// Typical e2e range:   1 µs  → 1 ms    (mutex + map lookup + book-write loop)
+// Tail / contention:   1 ms  → 100 ms   (lock contention, OS scheduling jitter)
 const prometheus::Histogram::BucketBoundaries Metrics::LATENCY_BUCKETS_NS = {
-    100, 500, 1'000, 2'500, 5'000, 10'000, 25'000, 50'000, 100'000
+    100, 500,
+    1'000, 2'500, 5'000,
+    10'000, 25'000, 50'000, 100'000, 250'000, 500'000,
+    1'000'000, 2'500'000, 5'000'000, 100'000'000
 };
 
 // ─── Singleton ────────────────────────────────────────────────────────────────

@@ -1,0 +1,13 @@
+global:
+  scrape_interval:     5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: tickplant
+    scrape_interval: 5s
+    static_configs:
+      # host.docker.internal resolves to the Docker host on both macOS (Docker
+      # Desktop) and Linux (Docker 20.10+ with host-gateway in docker-compose).
+      - targets: ['host.docker.internal:9090']
+        labels:
+          app: tickplant
