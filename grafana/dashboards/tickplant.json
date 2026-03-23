@@ -172,11 +172,126 @@
     },
 
     {
+      "id": 5,
+      "title": "Book Staleness — All Symbols (Debug Table)",
+      "description": "Current staleness for every tracked (exchange, symbol) book, sorted worst-first. Immediately identifies which specific symbol is driving the per-exchange worst-case in the panel above. Color: green < 500 ms, orange ≥ 500 ms, red ≥ 30 s.",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null  },
+              { "color": "orange", "value": 500   },
+              { "color": "red",    "value": 30000 }
+            ]
+          },
+          "custom": {
+            "displayMode": "color-background",
+            "align": "auto"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "exchange" },
+            "properties": [{ "id": "custom.width", "value": 100 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "symbol" },
+            "properties": [{ "id": "custom.width", "value": 150 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [
+              { "id": "displayName",   "value": "Staleness (ms)" },
+              { "id": "custom.width",  "value": 140 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [{ "displayName": "Staleness (ms)", "desc": true }],
+        "footer": { "show": false }
+      },
+      "transformations": [],
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sort_desc(tickplant_book_staleness_ms)",
+          "legendFormat": "",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 6,
+      "title": "Book Staleness — Worst Symbol per Exchange over Time (Debug)",
+      "description": "At each point in time, shows the single stalest symbol per exchange (topk=1 by exchange). The legend label switches dynamically as the worst symbol changes — e.g. 'Binance: ALGOUSDT' indicates ALGOUSDT is the quiet book driving Binance's worst-case. Thresholds match the summary panel above.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "ms",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisCenteredZero": false,
+            "axisPlacement": "auto",
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null  },
+              { "color": "orange", "value": 500   },
+              { "color": "red",    "value": 30000 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": {
+          "showLegend": true,
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": ["max", "last"]
+        }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "topk(1, tickplant_book_staleness_ms) by (exchange)",
+          "legendFormat": "{{exchange}}: {{symbol}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
       "id": 4,
       "title": "Arbitrage Detection Rate — Signals per Second by Exchange Pair",
       "description": "Cross-exchange arbitrage opportunities detected per second (aggregated across all symbols). Stacked bars show relative contribution from each buy→sell pair.",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 17 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
