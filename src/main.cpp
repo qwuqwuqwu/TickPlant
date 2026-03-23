@@ -65,11 +65,20 @@ int main(int argc, char* argv[]) {
     load_dotenv();
 
     // Parse command-line arguments
-    int max_reports = 0;  // 0 = unlimited (default)
+    int max_reports       = 0;   // 0 = unlimited (default)
+    int burst_interval_ms = 0;   // 0 = no burst
+    int burst_multiplier  = 10;  // rate multiplier during burst
+    int burst_duration_ms = 2000;
     for (int i = 1; i < argc; i++) {
-        if (std::string(argv[i]) == "--max-reports" && i + 1 < argc) {
+        std::string arg(argv[i]);
+        if (arg == "--max-reports" && i + 1 < argc)
             max_reports = std::stoi(argv[++i]);
-        }
+        else if (arg == "--burst-interval-ms" && i + 1 < argc)
+            burst_interval_ms = std::stoi(argv[++i]);
+        else if (arg == "--burst-multiplier" && i + 1 < argc)
+            burst_multiplier = std::stoi(argv[++i]);
+        else if (arg == "--burst-duration-ms" && i + 1 < argc)
+            burst_duration_ms = std::stoi(argv[++i]);
     }
 
     std::cout << "Multi-Exchange Crypto Arbitrage Dashboard\n";
@@ -202,6 +211,9 @@ int main(int argc, char* argv[]) {
     g_fix_simulator->set_snapshot_interval_ms(5000);
     g_fix_simulator->set_incremental_hz(20);  // 20 updates/sec across all symbols
 
+    if (burst_interval_ms > 0)
+        g_fix_simulator->set_burst_params(burst_interval_ms, burst_multiplier, burst_duration_ms);
+
     g_fix_simulator->set_callback([&](const std::string& /*raw*/, const FIXMessage& msg) {
         g_arbitrage_engine->update_fix_data(msg);
     });
@@ -246,11 +258,15 @@ int main(int argc, char* argv[]) {
     });
     g_arbitrage_engine->start();
 
-    // FIX simulator temporarily disabled — synthetic prices cause large spreads
-    // against live feeds.  Re-enable by uncommenting the two lines below.
-    // g_fix_simulator->start();
-    // std::cout << "FIX feed simulator started (10 symbols, 20 updates/sec, "
-    //              "snapshot every 5s)\n";
+    // FIX simulator: always enabled when --burst-interval-ms is supplied.
+    // Note: synthetic prices create large cross-exchange spreads vs live feeds —
+    // expected behaviour, not a bug.
+    if (burst_interval_ms > 0) {
+        g_fix_simulator->start();
+        std::cout << "FIX feed simulator started (10 symbols, 20 hz baseline, "
+                  << burst_multiplier << "x burst every " << burst_interval_ms
+                  << " ms for " << burst_duration_ms << " ms)\n";
+    }
 
     // Start the dashboard (Thread 1 - display)
     g_dashboard->set_update_interval(std::chrono::milliseconds(500)); // Update every 500ms

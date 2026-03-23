@@ -80,6 +80,12 @@ public:
     // number of symbols.
     void set_incremental_hz(int hz);
 
+    // Configure periodic burst mode.  Every interval_ms milliseconds the
+    // simulator raises its update rate by multiplier× for duration_ms, then
+    // returns to the normal incremental_hz rate.  Pass interval_ms == 0 to
+    // disable burst mode (default).  Must be called before start().
+    void set_burst_params(int interval_ms, int multiplier, int duration_ms);
+
     // Callback invoked for every generated message.
     void set_callback(MessageCallback cb);
 
@@ -106,6 +112,9 @@ private:
     MessageCallback          callback_;
     int                      snapshot_interval_ms_ = 5000;
     int                      incremental_hz_       = 10;
+    int                      burst_interval_ms_    = 0;   // 0 = disabled
+    int                      burst_multiplier_     = 10;
+    int                      burst_duration_ms_    = 2000;
 
     std::thread       thread_;
     std::atomic<bool> running_{false};

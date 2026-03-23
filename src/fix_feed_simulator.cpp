@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iostream>
 #include <thread>
 
 // ─── Construction / destruction ───────────────────────────────────────────────
@@ -40,6 +41,12 @@ void FIXFeedSimulator::set_incremental_hz(int hz) {
     incremental_hz_ = (hz > 0) ? hz : 1;
 }
 
+void FIXFeedSimulator::set_burst_params(int interval_ms, int multiplier, int duration_ms) {
+    burst_interval_ms_ = interval_ms;
+    burst_multiplier_  = (multiplier > 1) ? multiplier : 2;
+    burst_duration_ms_ = (duration_ms > 0) ? duration_ms : 1000;
+}
+
 void FIXFeedSimulator::set_callback(MessageCallback cb) {
     callback_ = std::move(cb);
 }
@@ -60,15 +67,45 @@ void FIXFeedSimulator::stop() {
 // ─── Simulation loop ──────────────────────────────────────────────────────────
 
 void FIXFeedSimulator::simulation_loop() {
-    const auto sleep_ms      = std::chrono::milliseconds(
-                                   std::max(1, 1000 / incremental_hz_));
     const auto snap_interval = std::chrono::milliseconds(snapshot_interval_ms_);
+
+    // Burst state — only meaningful when burst_interval_ms_ > 0.
+    bool      in_burst  = false;
+    auto      last_burst_start = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point burst_end{};
 
     while (running_) {
         const auto now = std::chrono::steady_clock::now();
 
+        // ── Burst mode transitions ─────────────────────────────────────────
+        if (burst_interval_ms_ > 0) {
+            if (!in_burst) {
+                auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - last_burst_start).count();
+                if (since_last >= burst_interval_ms_) {
+                    in_burst  = true;
+                    burst_end = now + std::chrono::milliseconds(burst_duration_ms_);
+                    std::cout << "[FIX] Burst start: "
+                              << (incremental_hz_ * burst_multiplier_)
+                              << " hz for " << burst_duration_ms_ << " ms\n";
+                }
+            } else if (now >= burst_end) {
+                in_burst         = false;
+                last_burst_start = now;
+                std::cout << "[FIX] Burst end: returning to "
+                          << incremental_hz_ << " hz\n";
+            }
+        }
+
+        // Sleep interval derived from effective rate — recomputed every iteration
+        // so burst transitions take effect immediately on the next wake-up.
+        const int effective_hz = in_burst
+                                 ? incremental_hz_ * burst_multiplier_
+                                 : incremental_hz_;
+        const auto sleep_ms = std::chrono::milliseconds(std::max(1, 1000 / effective_hz));
+
+        // ── Emit one message per symbol ────────────────────────────────────
         for (auto& s : states_) {
-            // Apply a tiny random walk: ±0.005% per tick
             std::uniform_real_distribution<double> drift(-0.00005, 0.00005);
             s.current_mid *= (1.0 + drift(s.rng));
 
