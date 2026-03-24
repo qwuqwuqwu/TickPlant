@@ -238,7 +238,7 @@ void ArbitrageEngine::calculate_arbitrage() {
     // FIX is synthetic — it is only active during burst windows and goes
     // intentionally silent between them; 500 ms catches a truly dead burst.
     auto staleness_limit_ms = [](const std::string& exchange) -> double {
-        if (exchange == "Binance" || exchange == "Kraken") return 30'000.0;
+        // if (exchange == "Binance" || exchange == "Kraken") return 30'000.0;
         return 500.0;
     };
 
