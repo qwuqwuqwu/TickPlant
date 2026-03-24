@@ -56,19 +56,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.50, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[4s])))",
           "legendFormat": "p50  {{exchange}}",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[4s])))",
           "legendFormat": "p99  {{exchange}}",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.999, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[$__rate_interval])))",
+          "expr": "histogram_quantile(0.999, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[4s])))",
           "legendFormat": "p999 {{exchange}}",
           "refId": "C"
         }
@@ -112,7 +112,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(tickplant_messages_total[$__rate_interval])",
+          "expr": "rate(tickplant_messages_total[4s])",
           "legendFormat": "{{exchange}}  {{type}}",
           "refId": "A"
         }
@@ -225,7 +225,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sort_desc(tickplant_book_staleness_ms)",
+          "expr": "tickplant_book_staleness_ms",
           "legendFormat": "",
           "instant": true,
           "refId": "A"
@@ -325,7 +325,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (buy_exchange, sell_exchange) (rate(tickplant_arb_detections_total[$__rate_interval]))",
+          "expr": "sum by (buy_exchange, sell_exchange) (rate(tickplant_arb_detections_total[4s]))",
           "legendFormat": "{{buy_exchange}} → {{sell_exchange}}",
           "refId": "A"
         }
