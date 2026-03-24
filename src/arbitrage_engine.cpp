@@ -247,7 +247,8 @@ void ArbitrageEngine::calculate_arbitrage() {
         for (const auto& [key, book] : ws_books_) {
             auto snap = book->get_snapshot();
             if (snap.empty()) continue;
-            double staleness_ms = static_cast<double>(now_ms - snap.timestamp_ms);
+            double staleness_ms = (snap.timestamp_ms > now_ms) ? 0.0 :
+                                  static_cast<double>(now_ms - snap.timestamp_ms);
             Metrics::instance().set_book_staleness(snap.exchange, snap.symbol, staleness_ms);
             Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "bid",
                                                static_cast<double>(snap.bids.size()));
@@ -264,7 +265,8 @@ void ArbitrageEngine::calculate_arbitrage() {
         for (const auto& [sym, book] : fix_books_) {
             auto snap = book->get_snapshot();
             if (snap.empty()) continue;
-            double staleness_ms = static_cast<double>(now_ms - snap.timestamp_ms);
+            double staleness_ms = (snap.timestamp_ms > now_ms) ? 0.0 :
+                                  static_cast<double>(now_ms - snap.timestamp_ms);
             Metrics::instance().set_book_staleness("FIX", sym, staleness_ms);
             Metrics::instance().set_book_depth("FIX", sym, "bid",
                                                static_cast<double>(snap.bids.size()));
