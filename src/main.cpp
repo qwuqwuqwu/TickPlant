@@ -352,8 +352,10 @@ int main(int argc, char* argv[]) {
             phase(2, "Baseline — 20 hz measurement window", 30);
             g_fix_simulator->set_hz(20);
             g_fix_simulator->set_paused(false);
+            Metrics::instance().record_phase_event("baseline", "start");
             for (int i = 0; i < 30 && !g_shutdown; ++i)
                 std::this_thread::sleep_for(1s);
+            Metrics::instance().record_phase_event("baseline", "end");
 
             // Phase 3: idle — FIX silent, books go stale, arb engine drops FIX
             phase(3, "Idle — FIX silent, books go stale", 30);
@@ -365,8 +367,10 @@ int main(int argc, char* argv[]) {
             phase(4, "10x burst — 200 hz for 2s", 2);
             g_fix_simulator->set_hz(200);
             g_fix_simulator->set_paused(false);
+            Metrics::instance().record_phase_event("burst_10x", "start");
             for (int i = 0; i < 2 && !g_shutdown; ++i)
                 std::this_thread::sleep_for(1s);
+            Metrics::instance().record_phase_event("burst_10x", "end");
 
             // Phase 5: idle — recovery window
             phase(5, "Idle — recovery window", 30);
@@ -378,14 +382,18 @@ int main(int argc, char* argv[]) {
             phase(6, "20x burst — 400 hz for 3s", 3);
             g_fix_simulator->set_hz(400);
             g_fix_simulator->set_paused(false);
+            Metrics::instance().record_phase_event("burst_20x", "start");
             for (int i = 0; i < 3 && !g_shutdown; ++i)
                 std::this_thread::sleep_for(1s);
+            Metrics::instance().record_phase_event("burst_20x", "end");
 
             // Phase 7: final idle — recovery measurement window
             phase(7, "Idle — final recovery window", 30);
             g_fix_simulator->set_paused(true);
+            Metrics::instance().record_phase_event("recovery", "start");
             for (int i = 0; i < 30 && !g_shutdown; ++i)
                 std::this_thread::sleep_for(1s);
+            Metrics::instance().record_phase_event("recovery", "end");
 
             std::cout << "\n[CHAOS] Scenario complete — shutting down.\n" << std::flush;
             g_shutdown = true;

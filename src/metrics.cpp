@@ -68,6 +68,13 @@ Metrics::Metrics()
               "labelled by buy_exchange, sell_exchange, and normalized symbol")
         .Register(*registry_);
 
+    phase_event_family_ = &BuildGauge()
+        .Name("tickplant_chaos_phase_event_ts_seconds")
+        .Help("Unix timestamp (seconds) when a chaos-test phase event fired. "
+              "Zero until the event occurs. Labels: phase, event=start|end. "
+              "Used for Grafana annotations and the phase-event table panel.")
+        .Register(*registry_);
+
     // Pre-cache metric instances for the 5 known exchanges so that
     // record_*() methods never allocate or build label maps on the hot path.
     for (const char* ex : {"Binance", "Bybit", "Coinbase", "Kraken", "FIX"}) {
@@ -144,6 +151,15 @@ void Metrics::set_book_staleness(const std::string& exchange,
                                   const std::string& symbol, double ms) {
     book_stale_family_->Add({{"exchange", exchange},
                               {"symbol",   symbol}}).Set(ms);
+}
+
+// ─── Chaos test phase events ─────────────────────────────────────────────────
+
+void Metrics::record_phase_event(const std::string& phase, const std::string& event) {
+    const double ts_s = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    phase_event_family_->Add({{"phase", phase}, {"event", event}}).Set(ts_s);
 }
 
 // ─── Arbitrage detection ─────────────────────────────────────────────────────

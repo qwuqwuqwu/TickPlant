@@ -1,5 +1,20 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "enable": true,
+        "expr": "changes(tickplant_chaos_phase_event_ts_seconds[5s]) > 0",
+        "hide": false,
+        "iconColor": "blue",
+        "name": "Chaos Phase Events",
+        "step": "1s",
+        "titleFormat": "{{phase}} {{event}}",
+        "tagKeys": "phase,event",
+        "textFormat": "{{phase}} {{event}}"
+      }
+    ]
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -58,18 +73,21 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "histogram_quantile(0.50, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[4s])))",
           "legendFormat": "p50  {{exchange}}",
+          "interval": "1s",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "histogram_quantile(0.99, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[4s])))",
           "legendFormat": "p99  {{exchange}}",
+          "interval": "1s",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "histogram_quantile(0.999, sum by (exchange, le) (rate(tickplant_e2e_latency_ns_bucket[4s])))",
           "legendFormat": "p999 {{exchange}}",
+          "interval": "1s",
           "refId": "C"
         }
       ]
@@ -114,6 +132,7 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "rate(tickplant_messages_total[4s])",
           "legendFormat": "{{exchange}}  {{type}}",
+          "interval": "1s",
           "refId": "A"
         }
       ]
@@ -166,6 +185,7 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "max by (exchange) (tickplant_book_staleness_ms)",
           "legendFormat": "{{exchange}}",
+          "interval": "1s",
           "refId": "A"
         }
       ]
@@ -221,13 +241,17 @@
         "sortBy": [{ "displayName": "Staleness (ms)", "desc": true }],
         "footer": { "show": false }
       },
-      "transformations": [],
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "merge",          "options": {} }
+      ],
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "tickplant_book_staleness_ms",
-          "legendFormat": "",
+          "expr": "last_over_time(tickplant_book_staleness_ms[10m])",
+          "legendFormat": "{{exchange}} — {{symbol}}",
           "instant": true,
+          "interval": "1s",
           "refId": "A"
         }
       ]
@@ -281,6 +305,7 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "topk(1, tickplant_book_staleness_ms) by (exchange)",
           "legendFormat": "{{exchange}}: {{symbol}}",
+          "interval": "1s",
           "refId": "A"
         }
       ]
@@ -327,6 +352,62 @@
           "datasource": { "type": "prometheus", "uid": "prometheus" },
           "expr": "sum by (buy_exchange, sell_exchange) (rate(tickplant_arb_detections_total[4s]))",
           "legendFormat": "{{buy_exchange}} → {{sell_exchange}}",
+          "interval": "1s",
+          "refId": "A"
+        }
+      ]
+    }
+
+    ,
+    {
+      "id": 7,
+      "title": "Chaos Test — Phase Event Timestamps",
+      "description": "Exact Unix timestamps (local time) when each chaos-test phase started and ended. Use these to set Grafana's time range for per-phase latency measurement. Rows are sorted chronologically. Vertical annotation lines on all panels above also mark these events.",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 41 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "displayMode": "auto" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "phase" },
+            "properties": [{ "id": "custom.width", "value": 120 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "event" },
+            "properties": [{ "id": "custom.width", "value": 80 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [
+              { "id": "displayName",  "value": "Timestamp" },
+              { "id": "unit",         "value": "dateTimeAsLocal" },
+              { "id": "custom.width", "value": 220 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [{ "id": "custom.hidden", "value": true }]
+          }
+        ]
+      },
+      "options": {
+        "sortBy": [{ "displayName": "Timestamp", "desc": false }],
+        "footer": { "show": false }
+      },
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "merge",          "options": {} }
+      ],
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "last_over_time(tickplant_chaos_phase_event_ts_seconds[6h]) * 1000",
+          "legendFormat": "{{phase}} — {{event}}",
+          "instant": true,
+          "interval": "1s",
           "refId": "A"
         }
       ]

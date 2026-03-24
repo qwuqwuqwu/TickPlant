@@ -70,6 +70,15 @@ public:
                                const std::string& sell_exchange,
                                const std::string& symbol);
 
+    // ── Chaos test phase events ───────────────────────────────────────────────
+    // Records the Unix timestamp (seconds) when a named chaos-test phase event
+    // fires.  Labels: phase = "baseline|burst_10x|burst_20x|recovery",
+    //                 event = "start|end".
+    // Value is 0 until the event occurs; then set to system_clock Unix seconds.
+    // Used in Grafana: table panel shows exact timestamps; annotation query
+    // draws vertical lines on all time-series panels when the gauge changes.
+    void record_phase_event(const std::string& phase, const std::string& event);
+
 private:
     Metrics();
     Metrics(const Metrics&) = delete;
@@ -94,6 +103,7 @@ private:
     prometheus::Family<prometheus::Gauge>*     book_depth_family_= nullptr;
     prometheus::Family<prometheus::Gauge>*     book_stale_family_= nullptr;
     prometheus::Family<prometheus::Counter>*   arb_family_       = nullptr;
+    prometheus::Family<prometheus::Gauge>*     phase_event_family_ = nullptr;
 
     // ── Pre-cached instances for known exchanges ──────────────────────────────
     std::unordered_map<std::string, prometheus::Histogram*> e2e_cache_;
