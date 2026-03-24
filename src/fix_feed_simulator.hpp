@@ -86,6 +86,15 @@ public:
     // disable burst mode (default).  Must be called before start().
     void set_burst_params(int interval_ms, int multiplier, int duration_ms);
 
+    // Dynamic controls — safe to call from any thread after start().
+    //
+    // set_hz: change the continuous-mode tick rate on the fly.  Takes effect
+    //   on the next loop iteration.  No-op in burst mode.
+    // set_paused: when true the simulation loop sleeps without emitting any
+    //   messages (books go stale).  When false, resumes at the current hz.
+    void set_hz(int hz);
+    void set_paused(bool paused);
+
     // Price oracle — called once per symbol per loop iteration to anchor the
     // simulator's mid price to the live market.  The argument is the FIX symbol
     // (e.g. "BTCUSD").  Return 0.0 if no price is available yet; the simulator
@@ -120,10 +129,11 @@ private:
     std::vector<SymbolState> states_;
     MessageCallback          callback_;
     int                      snapshot_interval_ms_ = 5000;
-    int                      incremental_hz_       = 10;
+    std::atomic<int>         incremental_hz_{10};
     int                      burst_interval_ms_    = 0;   // 0 = disabled
     int                      burst_multiplier_     = 10;
     int                      burst_duration_ms_    = 2000;
+    std::atomic<bool>        paused_{false};
     PriceOracle              oracle_;
 
     std::thread       thread_;

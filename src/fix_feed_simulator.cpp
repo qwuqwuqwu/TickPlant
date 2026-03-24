@@ -38,7 +38,15 @@ void FIXFeedSimulator::set_snapshot_interval_ms(int ms) {
 }
 
 void FIXFeedSimulator::set_incremental_hz(int hz) {
-    incremental_hz_ = (hz > 0) ? hz : 1;
+    incremental_hz_.store((hz > 0) ? hz : 1);
+}
+
+void FIXFeedSimulator::set_hz(int hz) {
+    incremental_hz_.store((hz > 0) ? hz : 1);
+}
+
+void FIXFeedSimulator::set_paused(bool paused) {
+    paused_.store(paused);
 }
 
 void FIXFeedSimulator::set_burst_params(int interval_ms, int multiplier, int duration_ms) {
@@ -102,7 +110,7 @@ void FIXFeedSimulator::simulation_loop() {
         // threshold.  Only during a burst window does FIX appear in arb results.
         const auto idle_sleep   = std::chrono::milliseconds(10);
         const auto burst_sleep  = std::chrono::milliseconds(
-                                      std::max(1, 1000 / (incremental_hz_ * burst_multiplier_)));
+                                      std::max(1, 1000 / (incremental_hz_.load() * burst_multiplier_)));
         auto last_burst_end     = std::chrono::steady_clock::now();  // fire first burst after interval_ms
 
         while (running_) {
@@ -119,7 +127,7 @@ void FIXFeedSimulator::simulation_loop() {
             const auto burst_end = std::chrono::steady_clock::now()
                                    + std::chrono::milliseconds(burst_duration_ms_);
             std::cout << "[FIX] Burst start: "
-                      << (incremental_hz_ * burst_multiplier_)
+                      << (incremental_hz_.load() * burst_multiplier_)
                       << " hz for " << burst_duration_ms_ << " ms\n";
 
             while (running_ && std::chrono::steady_clock::now() < burst_end) {
@@ -132,10 +140,16 @@ void FIXFeedSimulator::simulation_loop() {
         }
     } else {
         // ── Continuous mode (no burst configured) ─────────────────────────────
-        // Runs at incremental_hz_ indefinitely — original behaviour.
-        const auto sleep_ms = std::chrono::milliseconds(std::max(1, 1000 / incremental_hz_));
+        // Runs at incremental_hz_ indefinitely.  Supports dynamic rate changes
+        // and pause/resume from the scenario thread (set_hz / set_paused).
         while (running_) {
+            if (paused_.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
             tick_all(std::chrono::steady_clock::now());
+            const auto sleep_ms = std::chrono::milliseconds(
+                std::max(1, 1000 / incremental_hz_.load()));
             std::this_thread::sleep_for(sleep_ms);
         }
     }

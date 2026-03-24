@@ -45,6 +45,7 @@ std::unique_ptr<TerminalDashboard> g_dashboard;
 std::unique_ptr<ArbitrageEngine> g_arbitrage_engine;
 std::unique_ptr<FIXFeedSimulator> g_fix_simulator;
 std::atomic<bool> g_shutdown(false);
+std::thread       g_scenario_thread;
 
 void signal_handler(int signal) {
     std::cout << "\nShutdown signal received (" << signal << "). Cleaning up..." << std::endl;
@@ -88,10 +89,11 @@ int main(int argc, char* argv[]) {
     load_dotenv();
 
     // Parse command-line arguments
-    int max_reports       = 0;   // 0 = unlimited (default)
-    int burst_interval_ms = 0;   // 0 = no burst
-    int burst_multiplier  = 10;  // rate multiplier during burst
-    int burst_duration_ms = 2000;
+    int  max_reports       = 0;     // 0 = unlimited (default)
+    int  burst_interval_ms = 0;     // 0 = no burst
+    int  burst_multiplier  = 10;    // rate multiplier during burst
+    int  burst_duration_ms = 2000;
+    bool chaos_test        = false; // --chaos-test: run structured scenario sequence
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
         if (arg == "--max-reports" && i + 1 < argc)
@@ -102,6 +104,8 @@ int main(int argc, char* argv[]) {
             burst_multiplier = std::stoi(argv[++i]);
         else if (arg == "--burst-duration-ms" && i + 1 < argc)
             burst_duration_ms = std::stoi(argv[++i]);
+        else if (arg == "--chaos-test")
+            chaos_test = true;
     }
 
     std::cout << "Multi-Exchange Crypto Arbitrage Dashboard\n";
@@ -308,10 +312,89 @@ int main(int argc, char* argv[]) {
     });
     g_arbitrage_engine->start();
 
-    // FIX simulator: always enabled when --burst-interval-ms is supplied.
-    // Note: synthetic prices create large cross-exchange spreads vs live feeds —
-    // expected behaviour, not a bug.
-    if (burst_interval_ms > 0) {
+    // FIX simulator: started either in repeating-burst mode or chaos-test mode.
+    if (chaos_test) {
+        // ── Chaos test: structured scenario sequence ───────────────────────────
+        // Phases run in a dedicated thread.  The simulator starts in continuous
+        // 20 hz mode; the scenario thread drives pause/hz changes.
+        // Timeline (total ≈ 2 min 5 s):
+        //   Phase 0 — Warm-up    30 s   20 hz  (oracle priming, books populate)
+        //   Phase 1 — Baseline   30 s   20 hz  (measure row 1 of table)
+        //   Phase 2 — Idle       30 s   paused (books go stale → FIX drops out)
+        //   Phase 3 — 10x burst   2 s  200 hz  (measure row 2)
+        //   Phase 4 — Idle       30 s   paused (recovery)
+        //   Phase 5 — 20x burst   3 s  400 hz  (measure row 3)
+        //   Phase 6 — Idle       30 s   paused (measure row 4 — recovery)
+        //   → process exits
+        g_fix_simulator->start();
+        std::cout << "FIX feed simulator started — chaos test mode\n";
+
+        g_scenario_thread = std::thread([]() {
+            using namespace std::chrono_literals;
+
+            auto phase = [](int n, const char* desc, int secs) {
+                std::cout << "\n[CHAOS] ── Phase " << n << ": " << desc
+                          << " (" << secs << "s) ──\n" << std::flush;
+            };
+
+            // Phase 0: warm-up — run at base rate, let books populate and oracle prime
+            phase(0, "Warm-up — 20 hz, oracle priming", 30);
+            for (int i = 0; i < 30 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            // Phase 1: idle — FIX silent, books go stale, arb engine drops FIX
+            phase(1, "Idle — FIX silent, books go stale", 30);
+            g_fix_simulator->set_paused(true);
+            for (int i = 0; i < 30 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            // Phase 2: baseline measurement window — resume FIX at base rate
+            phase(2, "Baseline — 20 hz measurement window", 30);
+            g_fix_simulator->set_hz(20);
+            g_fix_simulator->set_paused(false);
+            for (int i = 0; i < 30 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            // Phase 3: idle — FIX silent, books go stale, arb engine drops FIX
+            phase(3, "Idle — FIX silent, books go stale", 30);
+            g_fix_simulator->set_paused(true);
+            for (int i = 0; i < 30 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            // Phase 4: 10x burst for 2s
+            phase(4, "10x burst — 200 hz for 2s", 2);
+            g_fix_simulator->set_hz(200);
+            g_fix_simulator->set_paused(false);
+            for (int i = 0; i < 2 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            // Phase 5: idle — recovery window
+            phase(5, "Idle — recovery window", 30);
+            g_fix_simulator->set_paused(true);
+            for (int i = 0; i < 30 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            // Phase 6: 20x burst for 3s
+            phase(6, "20x burst — 400 hz for 3s", 3);
+            g_fix_simulator->set_hz(400);
+            g_fix_simulator->set_paused(false);
+            for (int i = 0; i < 3 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            // Phase 7: final idle — recovery measurement window
+            phase(7, "Idle — final recovery window", 30);
+            g_fix_simulator->set_paused(true);
+            for (int i = 0; i < 30 && !g_shutdown; ++i)
+                std::this_thread::sleep_for(1s);
+
+            std::cout << "\n[CHAOS] Scenario complete — shutting down.\n" << std::flush;
+            g_shutdown = true;
+            if (g_arbitrage_engine) g_arbitrage_engine->stop();
+            if (g_dashboard)        g_dashboard->stop();
+        });
+
+    } else if (burst_interval_ms > 0) {
+        // ── Repeating burst mode ───────────────────────────────────────────────
         g_fix_simulator->start();
         std::cout << "FIX feed simulator started (10 symbols, 20 hz baseline, "
                   << burst_multiplier << "x burst every " << burst_interval_ms
@@ -333,6 +416,9 @@ int main(int argc, char* argv[]) {
     std::cout << "\nShutting down..." << std::endl;
 
     // Cleanup
+    if (g_scenario_thread.joinable())
+        g_scenario_thread.join();
+
     if (g_fix_simulator) {
         g_fix_simulator->stop();
     }
