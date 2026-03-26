@@ -33,8 +33,27 @@ if [ ! -f "$VCPKG_ROOT/vcpkg" ]; then
     exit 1
 fi
 
+# Check Linux system dependencies
+if [ "$(uname)" = "Linux" ]; then
+    echo "🔍 Checking Linux system dependencies..."
+    SYS_MISSING=()
+    for pkg in pkg-config libcurl4-openssl-dev zlib1g-dev; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            SYS_MISSING+=("$pkg")
+        fi
+    done
+    if [ ${#SYS_MISSING[@]} -gt 0 ]; then
+        echo "❌ Missing system packages: ${SYS_MISSING[*]}"
+        echo "   Please install them first:"
+        echo "   sudo apt install -y ${SYS_MISSING[*]}"
+        exit 1
+    else
+        echo "✅ System dependencies OK"
+    fi
+fi
+
 # Check if dependencies are installed
-echo "🔍 Checking dependencies..."
+echo "🔍 Checking vcpkg dependencies..."
 DEPS_MISSING=false
 
 # Check for grep command
@@ -43,7 +62,7 @@ if ! command -v grep >/dev/null 2>&1; then
     echo "📦 Installing all dependencies to be safe..."
     DEPS_MISSING=true
 else
-    for dep in boost-beast boost-system boost-thread boost-chrono boost-random nlohmann-json openssl; do
+    for dep in boost-beast boost-system boost-thread boost-chrono boost-random nlohmann-json openssl prometheus-cpp; do
         if ! "$VCPKG_ROOT/vcpkg" list 2>/dev/null | grep -q "$dep"; then
             echo "❌ Missing dependency: $dep"
             DEPS_MISSING=true
@@ -56,10 +75,9 @@ fi
 # Install missing dependencies
 if [ "$DEPS_MISSING" = true ]; then
     echo "📦 Installing missing dependencies..."
-    echo "Using Boost.Beast instead of websocketpp (more modern and reliable)"
-    "$VCPKG_ROOT/vcpkg" install boost-beast boost-system boost-thread boost-chrono boost-random nlohmann-json openssl
+    "$VCPKG_ROOT/vcpkg" install boost-beast boost-system boost-thread boost-chrono boost-random nlohmann-json openssl prometheus-cpp
 else
-    echo "✅ All dependencies are installed"
+    echo "✅ All vcpkg dependencies are installed"
 fi
 
 # Create build directory
