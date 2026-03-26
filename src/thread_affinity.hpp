@@ -20,21 +20,36 @@
 //
 // Linux  — tag is a LITERAL CPU core ID passed to pthread_setaffinity_np.
 //          The value must correspond to a real core (0 … nproc-1).
-//          With isolcpus=2,3 in GRUB, cores 2 and 3 are removed from the
-//          OS scheduler pool — only explicitly pinned threads run there,
-//          giving true isolation from OS scheduling jitter.
-//          Cores 0 and 1 remain shared with the OS and other processes.
+//
+//          Machine: i5-2410M — 2 physical cores, 4 logical cores (HT).
+//          HT topology:
+//            physical core 0  →  logical 0 + logical 2  (siblings)
+//            physical core 1  →  logical 1 + logical 3  (siblings)
+//
+//          GRUB: isolcpus=0,2 — isolates ALL logical threads of physical
+//          core 0 from the OS scheduler. This gives ArbitrageEngine the
+//          entire physical core with no HT sibling contention and no OS
+//          scheduling interference.
+//
+//          Key lesson: isolcpus must isolate BOTH HT siblings of a physical
+//          core to be effective. Isolating only one sibling (e.g. isolcpus=2,3)
+//          still allows the OS to run on the paired sibling (0,1), causing
+//          L1/L2 cache eviction and shared execution-unit contention.
+//
+//          Core 2 is isolated but intentionally left unoccupied — keeping
+//          the HT sibling idle eliminates all resource competition for core 0.
+//          Cores 1 and 3 (physical core 1) remain shared with the OS.
 namespace thread_affinity {
 
 #ifdef __linux__
     // Linux: values are literal core IDs.
-    // Machine: i5-2410M, 4 logical cores (0-3), isolcpus=2,3.
-    constexpr int TAG_ARBITRAGE_ENGINE = 2;  // isolated core — hot path
-    constexpr int TAG_BINANCE_WS      = 0;  // non-isolated, shares core 0
-    constexpr int TAG_COINBASE_WS     = 0;  // non-isolated, shares core 0
-    constexpr int TAG_KRAKEN_WS       = 1;  // non-isolated, shares core 1
-    constexpr int TAG_BYBIT_WS        = 1;  // non-isolated, shares core 1
-    constexpr int TAG_DASHBOARD       = 0;  // non-isolated, lowest priority
+    // isolcpus=0,2 — physical core 0 fully dedicated to ArbitrageEngine.
+    constexpr int TAG_ARBITRAGE_ENGINE = 0;  // isolated — hot path, full physical core
+    constexpr int TAG_BINANCE_WS      = 1;  // non-isolated, physical core 1
+    constexpr int TAG_COINBASE_WS     = 1;  // non-isolated, shares core 1
+    constexpr int TAG_KRAKEN_WS       = 3;  // non-isolated, physical core 1 (HT sibling)
+    constexpr int TAG_BYBIT_WS        = 3;  // non-isolated, shares core 3
+    constexpr int TAG_DASHBOARD       = 1;  // non-isolated, lowest priority
 #else
     // macOS: values are opaque hint group IDs — uniqueness = separate cores.
     constexpr int TAG_ARBITRAGE_ENGINE = 1;  // hot path
