@@ -1,0 +1,94 @@
+{
+  "context": {
+    "date": "2026-03-26T15:38:40-04:00",
+    "host_name": "eric-VPCEG18FW",
+    "executable": "./bench_spsc_queue",
+    "num_cpus": 4,
+    "mhz_per_cpu": 2893,
+    "cpu_scaling_enabled": false,
+    "aslr_enabled": false,
+    "caches": [
+      {
+        "type": "Data",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Instruction",
+        "level": 1,
+        "size": 32768,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 2,
+        "size": 262144,
+        "num_sharing": 2
+      },
+      {
+        "type": "Unified",
+        "level": 3,
+        "size": 3145728,
+        "num_sharing": 4
+      }
+    ],
+    "load_avg": [0.398438,0.48877,0.245605],
+    "library_version": "v1.9.5",
+    "library_build_type": "release",
+    "json_schema_version": 1
+  },
+  "benchmarks": [
+    {
+      "name": "BM_SPSC_PushLatency/iterations:1000000",
+      "family_index": 0,
+      "per_family_instance_index": 0,
+      "run_name": "BM_SPSC_PushLatency/iterations:1000000",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1000000,
+      "real_time": 4.3572375999985979e+01,
+      "cpu_time": 4.3571977000000004e+01,
+      "time_unit": "ns",
+      "min_ns": 1.1000000000000000e+01,
+      "p50_ns": 1.4000000000000000e+01,
+      "p999_ns": 1.7000000000000000e+01,
+      "p99_ns": 1.6000000000000000e+01
+    },
+    {
+      "name": "BM_SPSC_PopLatency/iterations:1000000",
+      "family_index": 1,
+      "per_family_instance_index": 0,
+      "run_name": "BM_SPSC_PopLatency/iterations:1000000",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 1000000,
+      "real_time": 4.4467293999986168e+01,
+      "cpu_time": 4.4448937000000008e+01,
+      "time_unit": "ns",
+      "min_ns": 1.0000000000000000e+01,
+      "p50_ns": 1.4000000000000000e+01,
+      "p999_ns": 2.0000000000000000e+01,
+      "p99_ns": 1.9000000000000000e+01
+    },
+    {
+      "name": "BM_SPSC_Throughput/iterations:3",
+      "family_index": 2,
+      "per_family_instance_index": 0,
+      "run_name": "BM_SPSC_Throughput/iterations:3",
+      "run_type": "iteration",
+      "repetitions": 1,
+      "repetition_index": 0,
+      "threads": 1,
+      "iterations": 3,
+      "real_time": 9.3371999999665911e-01,
+      "cpu_time": 9.3277200000001681e-01,
+      "time_unit": "ms",
+      "items_per_second": 1.0720733469700868e+08
+    }
+  ]
+}
