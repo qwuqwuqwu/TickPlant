@@ -13,16 +13,37 @@
 #endif
 
 // Thread affinity hints for scheduling threads on separate cores.
-// On macOS: threads with DIFFERENT tags are hinted to run on different cores/L2 groups.
-// On Linux: tags map to CPU core IDs for hard affinity via sched_setaffinity.
+//
+// macOS  — tag is an arbitrary hint group ID. The kernel uses it as a soft
+//          hint to place threads with DIFFERENT tags on different cores/L2
+//          domains. The numeric value is opaque; only uniqueness matters.
+//
+// Linux  — tag is a LITERAL CPU core ID passed to pthread_setaffinity_np.
+//          The value must correspond to a real core (0 … nproc-1).
+//          With isolcpus=2,3 in GRUB, cores 2 and 3 are removed from the
+//          OS scheduler pool — only explicitly pinned threads run there,
+//          giving true isolation from OS scheduling jitter.
+//          Cores 0 and 1 remain shared with the OS and other processes.
 namespace thread_affinity {
 
-    constexpr int TAG_ARBITRAGE_ENGINE = 1;  // Hot path - most latency-sensitive
+#ifdef __linux__
+    // Linux: values are literal core IDs.
+    // Machine: i5-2410M, 4 logical cores (0-3), isolcpus=2,3.
+    constexpr int TAG_ARBITRAGE_ENGINE = 2;  // isolated core — hot path
+    constexpr int TAG_BINANCE_WS      = 0;  // non-isolated, shares core 0
+    constexpr int TAG_COINBASE_WS     = 0;  // non-isolated, shares core 0
+    constexpr int TAG_KRAKEN_WS       = 1;  // non-isolated, shares core 1
+    constexpr int TAG_BYBIT_WS        = 1;  // non-isolated, shares core 1
+    constexpr int TAG_DASHBOARD       = 0;  // non-isolated, lowest priority
+#else
+    // macOS: values are opaque hint group IDs — uniqueness = separate cores.
+    constexpr int TAG_ARBITRAGE_ENGINE = 1;  // hot path
     constexpr int TAG_BINANCE_WS      = 2;
     constexpr int TAG_COINBASE_WS     = 3;
     constexpr int TAG_KRAKEN_WS       = 4;
     constexpr int TAG_BYBIT_WS        = 5;
-    constexpr int TAG_DASHBOARD       = 6;  // Lowest priority
+    constexpr int TAG_DASHBOARD       = 6;  // lowest priority
+#endif
 
     // Set thread affinity hint for the CURRENT thread.
     // Must be called from within the target thread (uses pthread_self()).
@@ -49,7 +70,7 @@ namespace thread_affinity {
 #elif defined(__linux__)
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
-        CPU_SET(tag % CPU_SETSIZE, &cpuset);
+        CPU_SET(tag, &cpuset);
 
         int ret = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
         if (ret != 0) {
