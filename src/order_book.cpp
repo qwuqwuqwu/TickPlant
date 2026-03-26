@@ -5,6 +5,7 @@
 #include "order_book.hpp"
 
 #include <chrono>
+#include <mutex>
 #include <stdexcept>
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
