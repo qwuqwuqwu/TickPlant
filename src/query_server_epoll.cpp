@@ -101,6 +101,7 @@ std::string EpollQueryServer::handle_line(std::string_view line) {
 #ifdef __linux__
 
 void EpollQueryServer::serve_loop() {
+    std::cout << "[epoll] serve_loop() started on port " << port_ << '\n' << std::flush;
     thread_affinity::set_thread_affinity(thread_affinity::TAG_QUERY_SERVER);
 
     // ── Create and bind TCP server socket ────────────────────────────────────
@@ -110,6 +111,7 @@ void EpollQueryServer::serve_loop() {
         running_ = false;
         return;
     }
+    std::cout << "[epoll] socket created fd=" << server_fd_ << '\n' << std::flush;
 
     {
         int one = 1;
@@ -123,19 +125,22 @@ void EpollQueryServer::serve_loop() {
     addr.sin_port        = htons(port_);
 
     if (::bind(server_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        std::cerr << "[epoll] bind() failed: " << strerror(errno) << '\n';
+        std::cerr << "[epoll] bind() failed on port " << port_
+                  << ": " << strerror(errno) << '\n' << std::flush;
         ::close(server_fd_);
         server_fd_ = -1;
         running_ = false;
         return;
     }
+    std::cout << "[epoll] bind() ok\n" << std::flush;
     if (::listen(server_fd_, SOMAXCONN) < 0) {
-        std::cerr << "[epoll] listen() failed: " << strerror(errno) << '\n';
+        std::cerr << "[epoll] listen() failed: " << strerror(errno) << '\n' << std::flush;
         ::close(server_fd_);
         server_fd_ = -1;
         running_ = false;
         return;
     }
+    std::cout << "[epoll] listen() ok\n" << std::flush;
 
     // ── Create epoll fd ───────────────────────────────────────────────────────
     int epfd = epoll_create1(EPOLL_CLOEXEC);

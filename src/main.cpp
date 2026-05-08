@@ -316,6 +316,8 @@ int main(int argc, char* argv[]) {
     Metrics::instance().start(9090);
 
     // Start query server (Phase 4) — selected via --query-server=epoll|uring
+    std::cout << "[debug] query_server_mode='" << query_server_mode
+              << "'  port=" << query_server_port << '\n';
     if (query_server_mode == "epoll") {
         g_epoll_server = std::make_unique<EpollQueryServer>(
             g_arbitrage_engine.get(), query_server_port);
