@@ -7,7 +7,10 @@
 #include "fix_feed_simulator.hpp"
 #include "metrics.hpp"
 #include "env_loader.hpp"
+#include "query_server_epoll.hpp"
+#include "query_server_uring.hpp"
 #include <iostream>
+#include <memory>
 #include <signal.h>
 #include <vector>
 #include <string>
@@ -44,6 +47,8 @@ std::unique_ptr<BybitWebSocketClient> g_bybit_client;
 std::unique_ptr<TerminalDashboard> g_dashboard;
 std::unique_ptr<ArbitrageEngine> g_arbitrage_engine;
 std::unique_ptr<FIXFeedSimulator> g_fix_simulator;
+std::unique_ptr<EpollQueryServer>    g_epoll_server;
+std::unique_ptr<IoUringQueryServer>  g_uring_server;
 std::atomic<bool> g_shutdown(false);
 std::thread       g_scenario_thread;
 
@@ -94,6 +99,8 @@ int main(int argc, char* argv[]) {
     int  burst_multiplier  = 10;    // rate multiplier during burst
     int  burst_duration_ms = 2000;
     bool chaos_test        = false; // --chaos-test: run structured scenario sequence
+    std::string query_server_mode;  // "", "epoll", "uring"
+    uint16_t    query_server_port = 9092;
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
         if (arg == "--max-reports" && i + 1 < argc)
@@ -106,6 +113,10 @@ int main(int argc, char* argv[]) {
             burst_duration_ms = std::stoi(argv[++i]);
         else if (arg == "--chaos-test")
             chaos_test = true;
+        else if (arg == "--query-server" && i + 1 < argc)
+            query_server_mode = argv[++i];   // "epoll" or "uring"
+        else if (arg == "--query-port" && i + 1 < argc)
+            query_server_port = static_cast<uint16_t>(std::stoi(argv[++i]));
     }
 
     std::cout << "Multi-Exchange Crypto Arbitrage Dashboard\n";
@@ -304,6 +315,26 @@ int main(int argc, char* argv[]) {
     // Start Prometheus metrics HTTP server (pull model, port 9090)
     Metrics::instance().start(9090);
 
+    // Start query server (Phase 4) — selected via --query-server=epoll|uring
+    if (query_server_mode == "epoll") {
+        g_epoll_server = std::make_unique<EpollQueryServer>(
+            g_arbitrage_engine.get(), query_server_port);
+        g_epoll_server->start();
+        std::cout << "Query server (epoll) started on port " << query_server_port << '\n';
+        std::cout << "  SNAPSHOT BTC    → L2 books for all exchanges\n";
+        std::cout << "  HEALTH          → per-feed staleness\n";
+    } else if (query_server_mode == "uring") {
+        g_uring_server = std::make_unique<IoUringQueryServer>(
+            g_arbitrage_engine.get(), query_server_port);
+        g_uring_server->start();
+        std::cout << "Query server (io_uring) started on port " << query_server_port << '\n';
+        std::cout << "  SNAPSHOT BTC    → L2 books for all exchanges\n";
+        std::cout << "  HEALTH          → per-feed staleness\n";
+    } else if (!query_server_mode.empty()) {
+        std::cerr << "Unknown --query-server mode '" << query_server_mode
+                  << "' — use 'epoll' or 'uring'\n";
+    }
+
     // Start the arbitrage engine (Thread 2)
     g_arbitrage_engine->set_min_profit_bps(0.1);  // 0.1 basis points minimum profit
     g_arbitrage_engine->set_max_reports(max_reports);
@@ -454,6 +485,9 @@ int main(int argc, char* argv[]) {
     if (g_bybit_client) {
         g_bybit_client->disconnect();
     }
+
+    if (g_epoll_server) g_epoll_server->stop();
+    if (g_uring_server) g_uring_server->stop();
 
     std::cout << "Application stopped cleanly." << std::endl;
     return 0;

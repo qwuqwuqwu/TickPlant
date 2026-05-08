@@ -33,6 +33,10 @@ add_executable(binance_dashboard
     src/order_book.cpp
     src/fix_feed_simulator.cpp
     src/metrics.cpp
+    # Phase 4 — query server (protocol + epoll + io_uring)
+    src/query_server.cpp
+    src/query_server_epoll.cpp
+    src/query_server_uring.cpp
 )
 
 # Include directories
@@ -53,6 +57,20 @@ target_link_libraries(binance_dashboard PRIVATE
     prometheus-cpp::pull
 )
 
+# ── io_uring (optional, Linux only) ──────────────────────────────────────────
+# If liburing is installed, link it and enable the io_uring query server.
+# Install on Ubuntu: sudo apt install liburing-dev
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_library(LIBURING_LIB uring)
+    if(LIBURING_LIB)
+        target_link_libraries(binance_dashboard PRIVATE ${LIBURING_LIB})
+        target_compile_definitions(binance_dashboard PRIVATE HAS_LIBURING)
+        message(STATUS "liburing found — io_uring query server enabled")
+    else()
+        message(STATUS "liburing not found — io_uring query server disabled (install liburing-dev)")
+    endif()
+endif()
+
 # Compiler flags for performance
 target_compile_options(binance_dashboard PRIVATE
     $<$<CONFIG:Release>:-O3 -march=native -DNDEBUG>
@@ -65,6 +83,16 @@ target_compile_definitions(binance_dashboard PRIVATE
     $<$<STREQUAL:${QUEUE_TYPE},SPSC>:USE_SPSC_QUEUE>
     $<$<STREQUAL:${QUEUE_TYPE},MPSC>:USE_MPSC_QUEUE>
 )
+
+# ── bench_query_client (Phase 4) ─────────────────────────────────────────────
+# Standalone RTT benchmark — no TickPlant deps, just POSIX sockets.
+# Always built alongside the main binary.
+add_executable(bench_query_client benchmarks/bench_query_client.cpp)
+target_compile_options(bench_query_client PRIVATE -O3)
+if(NOT APPLE)
+    # clock_gettime is in librt on older glibc
+    target_link_libraries(bench_query_client PRIVATE rt)
+endif()
 
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 # Enable with: cmake .. -DBUILD_BENCHMARKS=ON

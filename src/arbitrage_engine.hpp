@@ -7,6 +7,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <functional>
 #include <chrono>
@@ -64,6 +65,27 @@ public:
     // Print periodic status report
     void print_latency_report() const;
 
+    // ── Query API (used by the query server) ─────────────────────────────────
+
+    // Normalize any exchange symbol to a canonical base currency.
+    //   "BTCUSDT" → "BTC",  "BTC-USD" → "BTC",  "BTCUSD" → "BTC"
+    std::string normalize_symbol(const std::string& symbol) const;
+
+    // Return snapshots from every exchange that has a book for canonical_sym.
+    // canonical_sym is the output of normalize_symbol() — e.g. "BTC".
+    // Books that are empty are excluded.
+    std::vector<OrderBookSnapshot> get_snapshots(
+        const std::string& canonical_sym) const;
+
+    // List every canonical symbol that has at least one non-empty book.
+    std::vector<std::string> list_symbols() const;
+
+    // Per-exchange staleness: milliseconds since the most recently updated
+    // book for that exchange.  Returns UINT64_MAX for an exchange whose books
+    // have never received an update.
+    // Known exchange keys: "Binance", "Coinbase", "Kraken", "Bybit", "FIX".
+    std::unordered_map<std::string, uint64_t> get_feed_staleness_ms() const;
+
 private:
     // L2 order books for WebSocket producers — keyed by "EXCHANGE:SYMBOL"
     // (e.g. "Binance:BTCUSDT").  Updated by update_order_book() from producer
@@ -111,8 +133,4 @@ private:
 
     // Scan all L2 books for cross-exchange arbitrage and populate opportunities_
     void calculate_arbitrage();
-
-    // Normalize symbol format across exchanges to a canonical base currency
-    // (e.g. "BTCUSDT" → "BTC", "BTC-USD" → "BTC", "BTC/USD" → "BTC")
-    std::string normalize_symbol(const std::string& symbol) const;
 };

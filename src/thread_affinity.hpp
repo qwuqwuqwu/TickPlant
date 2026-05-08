@@ -50,6 +50,7 @@ namespace thread_affinity {
     constexpr int TAG_KRAKEN_WS       = 3;  // non-isolated, physical core 1 (HT sibling)
     constexpr int TAG_BYBIT_WS        = 3;  // non-isolated, shares core 3
     constexpr int TAG_DASHBOARD       = 1;  // non-isolated, lowest priority
+    constexpr int TAG_QUERY_SERVER    = 3;  // non-isolated, shares core 3 with Kraken/Bybit
 #else
     // macOS: values are opaque hint group IDs — uniqueness = separate cores.
     constexpr int TAG_ARBITRAGE_ENGINE = 1;  // hot path
@@ -58,6 +59,7 @@ namespace thread_affinity {
     constexpr int TAG_KRAKEN_WS       = 4;
     constexpr int TAG_BYBIT_WS        = 5;
     constexpr int TAG_DASHBOARD       = 6;  // lowest priority
+    constexpr int TAG_QUERY_SERVER    = 7;
 #endif
 
     // Set thread affinity hint for the CURRENT thread.

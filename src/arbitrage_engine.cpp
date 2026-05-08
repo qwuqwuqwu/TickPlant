@@ -6,6 +6,7 @@
 #include <iostream>
 #include <algorithm>
 #include <chrono>
+#include <unordered_set>
 
 // ─── Constructor / Destructor ─────────────────────────────────────────────────
 
@@ -358,6 +359,87 @@ void ArbitrageEngine::calculate_arbitrage() {
         std::lock_guard<std::mutex> opp_lock(opportunities_mutex_);
         opportunities_ = std::move(new_opportunities);
     }
+}
+
+// ─── Query API ────────────────────────────────────────────────────────────────
+
+std::vector<OrderBookSnapshot> ArbitrageEngine::get_snapshots(
+        const std::string& canonical_sym) const {
+    std::vector<OrderBookSnapshot> result;
+    {
+        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        for (const auto& [key, book] : ws_books_) {
+            auto colon = key.find(':');
+            std::string raw = (colon != std::string::npos) ? key.substr(colon + 1) : key;
+            if (normalize_symbol(raw) != canonical_sym) continue;
+            auto snap = book->get_snapshot();
+            if (!snap.empty()) result.push_back(std::move(snap));
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        for (const auto& [sym, book] : fix_books_) {
+            if (normalize_symbol(sym) != canonical_sym) continue;
+            auto snap = book->get_snapshot();
+            if (!snap.empty()) result.push_back(std::move(snap));
+        }
+    }
+    return result;
+}
+
+std::vector<std::string> ArbitrageEngine::list_symbols() const {
+    std::unordered_set<std::string> seen;
+    {
+        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        for (const auto& [key, book] : ws_books_) {
+            if (book->empty()) continue;
+            auto colon = key.find(':');
+            std::string raw = (colon != std::string::npos) ? key.substr(colon + 1) : key;
+            seen.insert(normalize_symbol(raw));
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        for (const auto& [sym, book] : fix_books_) {
+            if (!book->empty()) seen.insert(normalize_symbol(sym));
+        }
+    }
+    return std::vector<std::string>(seen.begin(), seen.end());
+}
+
+std::unordered_map<std::string, uint64_t>
+ArbitrageEngine::get_feed_staleness_ms() const {
+    const auto now_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+    std::unordered_map<std::string, uint64_t> result;
+    for (const char* ex : {"Binance", "Coinbase", "Kraken", "Bybit", "FIX"})
+        result[ex] = UINT64_MAX;
+
+    {
+        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        for (const auto& [key, book] : ws_books_) {
+            uint64_t lu = book->last_update_ms();
+            if (lu == 0) continue;
+            auto colon = key.find(':');
+            std::string exch = (colon != std::string::npos) ? key.substr(0, colon) : key;
+            uint64_t staleness = (now_ms >= lu) ? (now_ms - lu) : 0;
+            auto& cur = result[exch];
+            if (staleness < cur) cur = staleness;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        for (const auto& [sym, book] : fix_books_) {
+            uint64_t lu = book->last_update_ms();
+            if (lu == 0) continue;
+            uint64_t staleness = (now_ms >= lu) ? (now_ms - lu) : 0;
+            auto& cur = result["FIX"];
+            if (staleness < cur) cur = staleness;
+        }
+    }
+    return result;
 }
 
 // ─── Symbol normalization ─────────────────────────────────────────────────────
