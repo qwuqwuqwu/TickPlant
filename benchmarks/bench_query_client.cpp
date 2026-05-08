@@ -72,14 +72,20 @@ static bool send_all(int fd, const char* buf, size_t len) {
 }
 
 // Read from fd until '\n' is found; return false on error or EOF.
-// Discards the content — we are measuring timing, not parsing.
+// Reads in large chunks to avoid per-byte syscall overhead.
 static bool recv_line(int fd, char* buf, size_t bufsz) {
     size_t pos = 0;
     while (pos < bufsz - 1) {
-        ssize_t n = ::recv(fd, buf + pos, 1, 0);
+        ssize_t n = ::recv(fd, buf + pos, bufsz - pos - 1, 0);
         if (n <= 0) return false;
-        if (buf[pos] == '\n') { buf[pos + 1] = '\0'; return true; }
-        ++pos;
+        // Scan the newly received chunk for '\n'
+        for (ssize_t i = 0; i < n; ++i) {
+            if (buf[pos + i] == '\n') {
+                buf[pos + i + 1] = '\0';
+                return true;
+            }
+        }
+        pos += static_cast<size_t>(n);
     }
     return false;  // response too large for buffer
 }
