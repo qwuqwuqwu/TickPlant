@@ -52,7 +52,7 @@ void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
     const std::string key = snap.exchange + ":" + snap.symbol;
 
     {
-        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        std::unique_lock<std::shared_mutex> lk(ws_books_mutex_);
         auto it = ws_books_.find(key);
         if (it == ws_books_.end()) {
             ws_books_.emplace(key, std::make_unique<OrderBook>(snap.symbol, snap.exchange));
@@ -106,7 +106,7 @@ void ArbitrageEngine::update_fix_data(const FIXMessage& msg) {
     const std::string sym(msg.symbol);
 
     {
-        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        std::unique_lock<std::shared_mutex> lk(fix_books_mutex_);
         auto it = fix_books_.find(sym);
         if (it == fix_books_.end()) {
             fix_books_.emplace(sym, std::make_unique<OrderBook>(sym, "FIX"));
@@ -162,11 +162,11 @@ void ArbitrageEngine::print_latency_report() const {
     // Book inventory: how many live books per side
     size_t ws_count = 0, fix_count = 0;
     {
-        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        std::unique_lock<std::shared_mutex> lk(ws_books_mutex_);
         ws_count = ws_books_.size();
     }
     {
-        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        std::unique_lock<std::shared_mutex> lk(fix_books_mutex_);
         fix_count = fix_books_.size();
     }
     std::cout << "  L2 books: " << ws_count << " WebSocket  "
@@ -244,7 +244,7 @@ void ArbitrageEngine::calculate_arbitrage() {
     };
 
     {
-        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        std::unique_lock<std::shared_mutex> lk(ws_books_mutex_);
         for (const auto& [key, book] : ws_books_) {
             auto snap = book->get_snapshot();
             if (snap.empty()) continue;
@@ -262,7 +262,7 @@ void ArbitrageEngine::calculate_arbitrage() {
     }
 
     {
-        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        std::unique_lock<std::shared_mutex> lk(fix_books_mutex_);
         for (const auto& [sym, book] : fix_books_) {
             auto snap = book->get_snapshot();
             if (snap.empty()) continue;
@@ -367,7 +367,7 @@ std::vector<OrderBookSnapshot> ArbitrageEngine::get_snapshots(
         const std::string& canonical_sym) const {
     std::vector<OrderBookSnapshot> result;
     {
-        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(ws_books_mutex_);
         for (const auto& [key, book] : ws_books_) {
             auto colon = key.find(':');
             std::string raw = (colon != std::string::npos) ? key.substr(colon + 1) : key;
@@ -377,7 +377,7 @@ std::vector<OrderBookSnapshot> ArbitrageEngine::get_snapshots(
         }
     }
     {
-        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(fix_books_mutex_);
         for (const auto& [sym, book] : fix_books_) {
             if (normalize_symbol(sym) != canonical_sym) continue;
             auto snap = book->get_snapshot();
@@ -390,7 +390,7 @@ std::vector<OrderBookSnapshot> ArbitrageEngine::get_snapshots(
 std::vector<std::string> ArbitrageEngine::list_symbols() const {
     std::unordered_set<std::string> seen;
     {
-        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(ws_books_mutex_);
         for (const auto& [key, book] : ws_books_) {
             if (book->empty()) continue;
             auto colon = key.find(':');
@@ -399,7 +399,7 @@ std::vector<std::string> ArbitrageEngine::list_symbols() const {
         }
     }
     {
-        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(fix_books_mutex_);
         for (const auto& [sym, book] : fix_books_) {
             if (!book->empty()) seen.insert(normalize_symbol(sym));
         }
@@ -418,7 +418,7 @@ ArbitrageEngine::get_feed_staleness_ms() const {
         result[ex] = UINT64_MAX;
 
     {
-        std::lock_guard<std::mutex> lk(ws_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(ws_books_mutex_);
         for (const auto& [key, book] : ws_books_) {
             uint64_t lu = book->last_update_ms();
             if (lu == 0) continue;
@@ -430,7 +430,7 @@ ArbitrageEngine::get_feed_staleness_ms() const {
         }
     }
     {
-        std::lock_guard<std::mutex> lk(fix_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(fix_books_mutex_);
         for (const auto& [sym, book] : fix_books_) {
             uint64_t lu = book->last_update_ms();
             if (lu == 0) continue;

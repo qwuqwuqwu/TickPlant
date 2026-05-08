@@ -5,6 +5,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <condition_variable>
 #include <unordered_map>
 #include <unordered_set>
@@ -91,12 +92,12 @@ private:
     // (e.g. "Binance:BTCUSDT").  Updated by update_order_book() from producer
     // threads.  Read by the calculation thread in calculate_arbitrage().
     std::unordered_map<std::string, std::unique_ptr<OrderBook>> ws_books_;
-    mutable std::mutex                                           ws_books_mutex_;
+    mutable std::shared_mutex                                    ws_books_mutex_;
 
     // L2 order books for the FIX feed — keyed by raw FIX symbol (e.g. "BTCUSD").
     // Updated by update_fix_data() from the simulator thread.
     std::unordered_map<std::string, std::unique_ptr<OrderBook>> fix_books_;
-    mutable std::mutex                                           fix_books_mutex_;
+    mutable std::shared_mutex                                    fix_books_mutex_;
 
     // Arbitrage opportunities (result of the last calculate_arbitrage() call)
     std::vector<ArbitrageOpportunity> opportunities_;
