@@ -178,8 +178,9 @@ void IoUringQueryServer::serve_loop() {
     while (running_) {
         io_uring_cqe* cqe = nullptr;
 
-        // Wait up to 50 ms so we can re-check running_.
-        __kernel_timespec ts{0, 50'000'000};   // 50 ms
+        // Wait up to 1 ms so we can re-check running_.
+        // Short timeout bounds tail-latency spikes caused by missed CQEs.
+        __kernel_timespec ts{0, 1'000'000};    // 1 ms
         int ret = io_uring_wait_cqe_timeout(&ring, &cqe, &ts);
         if (ret == -ETIME) continue;   // timeout, loop back and check running_
         if (ret < 0) {

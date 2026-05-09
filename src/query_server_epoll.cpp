@@ -172,8 +172,8 @@ void EpollQueryServer::serve_loop() {
 
     // ── Event loop ────────────────────────────────────────────────────────────
     while (running_) {
-        // 50 ms timeout so we can check running_ periodically
-        int n = epoll_wait(epfd, events, MAX_EVENTS, 50);
+        // 1 ms timeout so we can check running_ periodically
+        int n = epoll_wait(epfd, events, MAX_EVENTS, 1);
         if (n < 0) {
             if (errno == EINTR) continue;
             break;
