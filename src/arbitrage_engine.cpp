@@ -243,40 +243,52 @@ void ArbitrageEngine::calculate_arbitrage() {
         return 500.0;
     };
 
+    // Snapshot all WS books under a *shared* lock — calculate_arbitrage() is
+    // read-only with respect to ws_books_; holding an exclusive lock here
+    // blocked every concurrent query reader unnecessarily.
+    std::vector<OrderBookSnapshot> ws_snaps;
     {
-        std::unique_lock<std::shared_mutex> lk(ws_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(ws_books_mutex_);
+        ws_snaps.reserve(ws_books_.size());
         for (const auto& [key, book] : ws_books_) {
             auto snap = book->get_snapshot();
-            if (snap.empty()) continue;
-            double staleness_ms = (snap.timestamp_ms > now_ms) ? 0.0 :
-                                  static_cast<double>(now_ms - snap.timestamp_ms);
-            Metrics::instance().set_book_staleness(snap.exchange, snap.symbol, staleness_ms);
-            Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "bid",
-                                               static_cast<double>(snap.bids.size()));
-            Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "ask",
-                                               static_cast<double>(snap.asks.size()));
-            if (staleness_ms > staleness_limit_ms(snap.exchange)) continue;
-            std::string norm = normalize_symbol(snap.symbol);
-            by_symbol[norm].emplace_back(snap.exchange, std::move(snap));
+            if (!snap.empty()) ws_snaps.push_back(std::move(snap));
         }
     }
+    // Metrics updates and symbol bucketing happen outside the lock.
+    for (auto& snap : ws_snaps) {
+        double staleness_ms = (snap.timestamp_ms > now_ms) ? 0.0 :
+                              static_cast<double>(now_ms - snap.timestamp_ms);
+        Metrics::instance().set_book_staleness(snap.exchange, snap.symbol, staleness_ms);
+        Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "bid",
+                                           static_cast<double>(snap.bids.size()));
+        Metrics::instance().set_book_depth(snap.exchange, snap.symbol, "ask",
+                                           static_cast<double>(snap.asks.size()));
+        if (staleness_ms > staleness_limit_ms(snap.exchange)) continue;
+        std::string norm = normalize_symbol(snap.symbol);
+        by_symbol[norm].emplace_back(snap.exchange, std::move(snap));
+    }
 
+    std::vector<OrderBookSnapshot> fix_snaps;
     {
-        std::unique_lock<std::shared_mutex> lk(fix_books_mutex_);
+        std::shared_lock<std::shared_mutex> lk(fix_books_mutex_);
+        fix_snaps.reserve(fix_books_.size());
         for (const auto& [sym, book] : fix_books_) {
             auto snap = book->get_snapshot();
-            if (snap.empty()) continue;
-            double staleness_ms = (snap.timestamp_ms > now_ms) ? 0.0 :
-                                  static_cast<double>(now_ms - snap.timestamp_ms);
-            Metrics::instance().set_book_staleness("FIX", sym, staleness_ms);
-            Metrics::instance().set_book_depth("FIX", sym, "bid",
-                                               static_cast<double>(snap.bids.size()));
-            Metrics::instance().set_book_depth("FIX", sym, "ask",
-                                               static_cast<double>(snap.asks.size()));
-            if (staleness_ms > staleness_limit_ms("FIX")) continue;
-            std::string norm = normalize_symbol(sym);
-            by_symbol[norm].emplace_back("FIX", std::move(snap));
+            if (!snap.empty()) fix_snaps.push_back(std::move(snap));
         }
+    }
+    for (auto& snap : fix_snaps) {
+        double staleness_ms = (snap.timestamp_ms > now_ms) ? 0.0 :
+                              static_cast<double>(now_ms - snap.timestamp_ms);
+        Metrics::instance().set_book_staleness("FIX", snap.symbol, staleness_ms);
+        Metrics::instance().set_book_depth("FIX", snap.symbol, "bid",
+                                           static_cast<double>(snap.bids.size()));
+        Metrics::instance().set_book_depth("FIX", snap.symbol, "ask",
+                                           static_cast<double>(snap.asks.size()));
+        if (staleness_ms > staleness_limit_ms("FIX")) continue;
+        std::string norm = normalize_symbol(snap.symbol);
+        by_symbol[norm].emplace_back("FIX", std::move(snap));
     }
 
     // ── Compare all (exchange_i, exchange_j) pairs for each symbol ────────────
