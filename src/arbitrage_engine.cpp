@@ -95,6 +95,29 @@ void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
 
     Metrics::instance().record_message(snap.exchange, snap.is_snapshot);
 
+    // Log BBO tick to QuestDB if a TickLogger is attached.
+    if (tick_logger_) {
+        // Re-acquire a shared read lock to safely read BBO from the updated book.
+        double bid = 0, ask = 0, mid = 0, spd = 0;
+        {
+            std::shared_lock<std::shared_mutex> lk(ws_books_mutex_);
+            auto it = ws_books_.find(snap.exchange + ":" + snap.symbol);
+            if (it != ws_books_.end()) {
+                bid = it->second->best_bid();
+                ask = it->second->best_ask();
+                mid = it->second->mid_price();
+                spd = it->second->spread_bps();
+            }
+        }
+        if (bid > 0 && ask > 0) {
+            const uint64_t ts_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count());
+            tick_logger_->log_bbo(snap.exchange, normalize_symbol(snap.symbol),
+                                  bid, ask, mid, spd, ts_ns);
+        }
+    }
+
     // Wake the calculation thread
     books_dirty_ = true;
     cv_.notify_one();

@@ -37,6 +37,8 @@ add_executable(binance_dashboard
     src/query_server.cpp
     src/query_server_epoll.cpp
     src/query_server_uring.cpp
+    # Phase 5 — tick persistence (QuestDB via ILP)
+    src/tick_logger.cpp
 )
 
 # Include directories

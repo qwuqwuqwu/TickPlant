@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "tick_logger.hpp"
 #include <thread>
 #include <atomic>
 #include <memory>
@@ -43,6 +44,11 @@ public:
     // Thread-safe: may be called from the simulator thread concurrently with
     // update_order_book() calls from WebSocket producer threads.
     void update_fix_data(const FIXMessage& msg);
+
+    // Attach a TickLogger — if set, every order-book update logs a BBO tick
+    // to QuestDB via ILP.  Pass nullptr to disable.  Not thread-safe: call
+    // before start().
+    void set_tick_logger(TickLogger* logger) noexcept { tick_logger_ = logger; }
 
     // Set callback for when arbitrage opportunities are found
     void set_opportunity_callback(ArbitrageCallback callback);
@@ -128,6 +134,9 @@ private:
 
     // Shutdown callback (invoked when max_reports reached)
     std::function<void()> shutdown_callback_;
+
+    // Optional tick logger — non-owning pointer, may be nullptr.
+    TickLogger* tick_logger_ = nullptr;
 
     // Main calculation loop (runs on calculation_thread_)
     void calculation_loop();

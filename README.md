@@ -1,27 +1,34 @@
-# Multi-Exchange Crypto Arbitrage Dashboard
+# TickPlant — Low-Latency Market Data Platform
 
-A high-performance, low-latency cryptocurrency arbitrage monitoring system built in C++ with real-time WebSocket connections to multiple exchanges.
+A high-performance market data platform written in C++20. Aggregates live
+L2 order books from four cryptocurrency exchanges and a FIX feed simulator,
+detects cross-exchange arbitrage opportunities in real time, and exposes the
+data via a microsecond-latency TCP query server backed by either **epoll** or
+**io_uring**.
 
 ## Features
 
-- **Real-time Market Data**: Live WebSocket feeds from 3 major exchanges
-  - Binance.US (Yellow)
-  - Coinbase (Blue)
-  - Kraken (Magenta)
+- **Real-time L2 Order Books**: Live WebSocket feeds from 4 exchanges
+  - Binance (depth20, 100 ms)
+  - Coinbase Advanced Trade (level2 full book)
+  - Kraken v2 (BBO event-triggered)
+  - Bybit (orderbook.50)
 
-- **Multi-Symbol Monitoring**: Track 9 cryptocurrency pairs simultaneously
+- **FIX Feed Simulator**: Synthetic burst feed over TCP using a hand-rolled
+  FIX 4.2 parser — no third-party FIX library
+
+- **Multi-Symbol Monitoring**: 9 cryptocurrency pairs simultaneously
   - BTC, ETH, ADA, DOT, SOL, MATIC, AVAX, LTC, LINK
 
-- **Live Arbitrage Detection**: Automatic detection of profitable arbitrage opportunities
+- **Cross-Exchange Arbitrage Detection**: Real-time L2 spread comparison
   - Configurable minimum profit threshold (default: 5 basis points)
-  - Real-time calculation every 100ms
-  - Cross-exchange price comparison
+  - Quantity-gated: phantom arbitrage from zero-size quotes filtered out
 
-- **Beautiful Terminal Dashboard**: Color-coded real-time display
-  - Live price updates with freshness indicators (LIVE/SLOW/STALE)
-  - Bid/Ask spreads in basis points
-  - Market statistics and average spreads
-  - Arbitrage opportunity alerts
+- **Phase 4 — TCP Query Server**: epoll or io_uring backend, newline-delimited
+  protocol, `SNAPSHOT <SYM>` and `HEALTH` commands
+
+- **Prometheus Metrics**: per-feed staleness, book depth, arbitrage alerts
+  (pull model, port 9090)
 
 ## Prerequisites
 
@@ -73,30 +80,53 @@ make -j$(nproc)
 ## Usage
 
 ```bash
-# Run the dashboard
-./binance_dashboard
+# Run with epoll query server (Linux)
+./binance_dashboard --query-server epoll --query-port 9092
 
-# The application will:
-# 1. Connect to Binance WebSocket
-# 2. Subscribe to 10 major cryptocurrency pairs
-# 3. Display live data in a terminal dashboard
-# 4. Update every 500ms with real-time prices
+# Run with io_uring query server (Linux, requires liburing)
+./binance_dashboard --query-server uring --query-port 9092
+
+# Query a live L2 snapshot
+echo "SNAPSHOT BTC" | nc -q 1 127.0.0.1 9092
+
+# Check feed health
+echo "HEALTH" | nc -q 1 127.0.0.1 9092
+
+# Run the RTT benchmark (standalone, no deps)
+./bench_query_client --sym BTC --n 10000 --warmup 500
+
+# Benchmark with CPU pinning (Linux, after isolcpus=2,3 in grub)
+taskset -c 3 ./binance_dashboard --query-server epoll --query-port 9092 &
+taskset -c 2 ./bench_query_client --sym BTC --n 10000 --warmup 500
 ```
 
 ## Architecture
 
 ### Low-Latency Design
-- **Multi-threaded architecture** for optimal performance
-- **WebSocket connections** for minimal latency
-- **Lock-free data structures** where possible
-- **Efficient symbol normalization** for cross-exchange matching
+- **`shared_mutex` on order books** — query readers and arbitrage detection
+  run concurrently; only WebSocket update callbacks hold exclusive locks
+- **Edge-triggered epoll (EPOLLET)** — one syscall drains all pending data;
+  no redundant wake-ups
+- **io_uring ring buffer** — RECV/SEND submitted via shared SQ; completions
+  harvested from CQ without per-operation kernel crossings
+- **TCP_NODELAY on all connections** — disables Nagle; eliminates 40 ms
+  ACK-delay on small request/response messages
+- **CPU affinity + `isolcpus`** — query server thread pinned to a fully
+  isolated core (no OS scheduler ticks, no competing threads)
 
 ### Components
-- `binance_client`: WebSocket client for Binance.US
-- `coinbase_client`: WebSocket client for Coinbase Advanced Trade
-- `kraken_client`: WebSocket client for Kraken (v2 API with BBO triggers)
-- `arbitrage_engine`: Real-time arbitrage calculation engine
-- `dashboard`: Terminal UI with color-coded display
+- `binance_client`: WebSocket client — Binance depth20 @ 100 ms
+- `coinbase_client`: WebSocket client — Coinbase Advanced Trade level2
+- `kraken_client`: WebSocket client — Kraken v2 BBO event-triggered
+- `bybit_client`: WebSocket client — Bybit orderbook.50
+- `fix_feed_simulator`: Synthetic TCP FIX 4.2 burst feed
+- `fix_parser`: Hand-rolled FIX 4.2 tag parser (no third-party lib)
+- `order_book`: Thread-safe L2 order book with `shared_mutex`
+- `arbitrage_engine`: Real-time cross-exchange arbitrage detection
+- `query_server_epoll`: Edge-triggered epoll query server (Linux)
+- `query_server_uring`: io_uring query server via liburing (Linux)
+- `metrics`: Prometheus pull-model metrics (port 9090)
+- `dashboard`: Terminal UI with color-coded live display
 
 ## Monitored Symbols
 
@@ -131,6 +161,91 @@ The dashboard tracks these cryptocurrency pairs:
 - **Ctrl+C**: Graceful shutdown
 - **Auto-refresh**: Every 500ms
 - **Auto-reconnect**: On connection failures
+
+## Phase 4 — Low-Latency Query Server
+
+A TCP query server exposes live L2 order-book snapshots over a simple
+newline-delimited text protocol.  Two I/O backends are implemented and
+benchmarked head-to-head.
+
+### Wire Protocol
+
+```
+# Request (client → server)
+SNAPSHOT BTC\n
+HEALTH\n
+
+# Response (server → client) — compact JSON + newline
+{"status":"ok","symbol":"BTC","books":[{"exchange":"Binance","bids":[[65432.10,0.42],...],"asks":[[65433.00,0.18],...]},...]}
+{"status":"ok","feeds":{"Binance":{"staleness_ms":12,"live":true},...}}
+```
+
+### I/O Backends
+
+| Backend | Mechanism | Syscalls per request |
+|---------|-----------|----------------------|
+| **epoll** | `epoll_wait` → `recv` → `send` (edge-triggered) | ~3 |
+| **io_uring** | `io_uring_enter` batches RECV+SEND via shared ring buffer | ~1 |
+
+Launch with `--query-server epoll` or `--query-server uring` (default port 9092).
+
+### Benchmark Results
+
+**Hardware**: Intel Core i5-2410M (Sandy Bridge, 2× physical cores, 4× logical, 2.3 GHz)  
+**OS**: Ubuntu 22.04, kernel 6.8, `isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3`  
+**Method**: server pinned to isolated CPU 3 (`taskset -c 3`), client pinned to isolated
+CPU 2 (`taskset -c 2`); single persistent TCP connection; 10,000 measured requests,
+500 warmup; loopback interface
+
+```
+bench_query_client --sym BTC --n 10000 --warmup 500
+```
+
+| Metric | epoll | io_uring |
+|--------|------:|--------:|
+| Throughput | ~600–620 req/s | ~490–650 req/s |
+| p50 RTT | ~1.6 ms | ~1.6 ms |
+| p99 RTT | ~2.0 ms | ~1.7–8.0 ms |
+| p999 RTT | ~2–8 ms | ~2–14 ms |
+
+**Both backends achieve ~1.6 ms median on this hardware.**  Tail latency
+is dominated by L3 cache pressure from the four concurrent WebSocket
+ingestion threads (Binance, Coinbase, Kraken, Bybit) which share the
+same 3 MB L3 cache as the isolated query-server core.  Run-to-run
+variance is high enough that per-run p999 numbers are not directly
+comparable.
+
+The meaningful comparison is **architectural**, not numeric:
+
+| Property | epoll | io_uring |
+|----------|-------|----------|
+| Syscalls per request | ~3 (`epoll_wait` + `recv` + `send`) | ~1 (`io_uring_enter` batches via ring) |
+| Kernel boundary crossings | Per-event | Per-batch |
+| Memory model | FD-based event table | Shared SQ/CQ ring buffers |
+| Best fit | Predictable single-connection latency | High-concurrency throughput |
+
+On production hardware with dedicated isolated cores and no shared-cache
+neighbours, io_uring's syscall reduction translates directly to lower
+median and tail latency at high connection counts.
+
+### Key Engineering Decisions
+
+- **`shared_mutex` for order-book reads** — the arbitrage calculation loop
+  originally held an exclusive write lock on `ws_books_mutex_` while scanning
+  all books and updating Prometheus metrics, blocking every concurrent query
+  reader for milliseconds.  Downgrading to `shared_lock` in all read-only paths
+  (`get_snapshots`, `list_symbols`, `calculate_arbitrage`) dropped median RTT
+  from ~14 ms to ~1.6 ms.
+
+- **Edge-triggered epoll (EPOLLET)** — avoids redundant `epoll_wait` wake-ups;
+  the server drains all available bytes per event.
+
+- **TCP_NODELAY on both sides** — disables Nagle's algorithm; prevents 40 ms
+  ACK-delay inflation on small request lines.
+
+- **1 ms poll timeout** — both servers check `running_` every 1 ms rather than
+  50 ms, bounding worst-case shutdown latency and eliminating timeout-induced
+  tail spikes in the io_uring CQE wait loop.
 
 ## Performance Characteristics
 

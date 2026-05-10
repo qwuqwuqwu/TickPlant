@@ -9,6 +9,7 @@
 #include "env_loader.hpp"
 #include "query_server_epoll.hpp"
 #include "query_server_uring.hpp"
+#include "tick_logger.hpp"
 #include <iostream>
 #include <memory>
 #include <signal.h>
@@ -49,6 +50,7 @@ std::unique_ptr<ArbitrageEngine> g_arbitrage_engine;
 std::unique_ptr<FIXFeedSimulator> g_fix_simulator;
 std::unique_ptr<EpollQueryServer>    g_epoll_server;
 std::unique_ptr<IoUringQueryServer>  g_uring_server;
+std::unique_ptr<TickLogger>          g_tick_logger;
 std::atomic<bool> g_shutdown(false);
 std::thread       g_scenario_thread;
 
@@ -140,6 +142,11 @@ int main(int argc, char* argv[]) {
     // Create dashboard, arbitrage engine, and WebSocket clients
     g_dashboard = std::make_unique<TerminalDashboard>();
     g_arbitrage_engine = std::make_unique<ArbitrageEngine>();
+
+    // Tick logger — streams BBO updates to QuestDB via ILP (port 9009).
+    // Starts even if QuestDB is not running; reconnects automatically.
+    g_tick_logger = std::make_unique<TickLogger>("127.0.0.1", 9009);
+    g_arbitrage_engine->set_tick_logger(g_tick_logger.get());
     g_binance_client = std::make_unique<BinanceWebSocketClient>();
     g_coinbase_client = std::make_unique<CoinbaseWebSocketClient>();
     g_kraken_client = std::make_unique<KrakenWebSocketClient>();
@@ -316,8 +323,6 @@ int main(int argc, char* argv[]) {
     Metrics::instance().start(9090);
 
     // Start query server (Phase 4) — selected via --query-server=epoll|uring
-    std::cout << "[debug] query_server_mode='" << query_server_mode
-              << "'  port=" << query_server_port << '\n';
     if (query_server_mode == "epoll") {
         g_epoll_server = std::make_unique<EpollQueryServer>(
             g_arbitrage_engine.get(), query_server_port);
