@@ -90,10 +90,11 @@ ResolutionResult QuestDbDataSource::resolve(
         const std::vector<std::string>& /*symbols*/,
         uint64_t /*max_staleness_ms*/)
 {
-    // Lightweight probe: count rows in the last 5 minutes.
-    const std::string sql =
-        "SELECT count() FROM order_book "
-        "WHERE timestamp > dateadd('m',-5,now())";
+    // Lightweight probe: verify the table exists and has at least one row.
+    // No timestamp filter — avoids false STALE when QuestDB just restarted
+    // and the tick logger hasn't reconnected yet (last-N-minutes window empty
+    // even though the table has 48 k+ historical rows).
+    const std::string sql = "SELECT count() FROM order_book LIMIT 1";
     std::string body = http_get("/exec?query=" + url_encode(sql) + "&limit=1");
 
     if (body.empty()) {
@@ -101,15 +102,20 @@ ResolutionResult QuestDbDataSource::resolve(
     }
     try {
         auto j = json::parse(body);
-        // QuestDB returns {"error":"..."} when something is wrong
+        // QuestDB wraps errors as {"error":"<msg>"}
         if (j.contains("error")) {
             return {ResolutionStatus::UNREACHABLE,
                     "QuestDB error: " + j["error"].get<std::string>()};
         }
-        // dataset[0][0] is the count
+        // Guard: dataset may be empty if the table has no rows at all.
+        if (!j.contains("dataset") ||
+            j["dataset"].empty() ||
+            j["dataset"][0].empty()) {
+            return {ResolutionStatus::STALE, "QuestDB: order_book table is empty"};
+        }
         auto cnt = j["dataset"][0][0].get<uint64_t>();
         if (cnt == 0) {
-            return {ResolutionStatus::STALE, "QuestDB: no rows in last 5 minutes"};
+            return {ResolutionStatus::STALE, "QuestDB: order_book table is empty"};
         }
     } catch (...) {
         return {ResolutionStatus::UNREACHABLE, "QuestDB: failed to parse probe response"};
