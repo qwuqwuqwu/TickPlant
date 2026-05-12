@@ -125,6 +125,12 @@ public:
     // Remove all price levels on both sides.
     void clear();
 
+    // Remove bid levels that are >= best ask (crossed / locked book).
+    // Called after each incremental delta batch from feeds (e.g. Kraken) that
+    // can transiently cross the book by sending bid and ask changes in separate
+    // WebSocket messages during a market match.
+    void prune_crossed();
+
     // ── Read-side (all thread-safe via shared_mutex) ──────────────────────
 
     // Return a full copy of the book — multiple threads may call concurrently.

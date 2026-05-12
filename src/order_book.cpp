@@ -187,6 +187,21 @@ uint64_t OrderBook::update_count() const {
     return update_count_;
 }
 
+void OrderBook::prune_crossed() {
+    std::unique_lock<std::shared_mutex> lock(rw_mutex_);
+    // Kraken (and some other feeds) can send bid and ask deltas in separate
+    // WebSocket messages.  During a market match the sequence is:
+    //   1. New bid arrives at price P  → book now has best_bid >= best_ask
+    //   2. Matching ask delete arrives → book returns to normal
+    // Between steps 1 and 2 the book is crossed.  Erase the highest bid
+    // levels that sit at or above the best ask so the snapshot we hand to
+    // the tick logger is always valid (spread_bps >= 0).
+    while (!bids_.empty() && !asks_.empty() &&
+           bids_.begin()->first >= asks_.begin()->first) {
+        bids_.erase(bids_.begin());
+    }
+}
+
 // ─── Private helpers ──────────────────────────────────────────────────────────
 
 // Caller must hold the write lock.

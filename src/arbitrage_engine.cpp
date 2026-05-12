@@ -89,6 +89,10 @@ void ArbitrageEngine::update_order_book(const OrderBookSnapshot& snap) {
                     else
                         book.set_level(OrderBook::Side::Ask, lvl.price, lvl.quantity, lvl.order_count);
                 }
+                // Kraken sends bid and ask deltas in separate messages.  After
+                // applying the full delta batch, remove any bid levels that are
+                // still >= the best ask so the tick we store is always valid.
+                book.prune_crossed();
             }
         }
     }
