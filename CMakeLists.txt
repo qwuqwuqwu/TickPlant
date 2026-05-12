@@ -39,6 +39,12 @@ add_executable(binance_dashboard
     src/query_server_uring.cpp
     # Phase 5 — tick persistence (QuestDB via ILP)
     src/tick_logger.cpp
+    # Phase 6 — config-driven reporting pipeline
+    src/data_source_registry.cpp
+    src/exchange_data_source.cpp
+    src/questdb_data_source.cpp
+    src/remote_data_source.cpp
+    src/report_pipeline.cpp
 )
 
 # Include directories
@@ -84,6 +90,15 @@ target_compile_definitions(binance_dashboard PRIVATE
     BOOST_ASIO_HAS_STD_CHRONO
     $<$<STREQUAL:${QUEUE_TYPE},SPSC>:USE_SPSC_QUEUE>
     $<$<STREQUAL:${QUEUE_TYPE},MPSC>:USE_MPSC_QUEUE>
+)
+
+# ── reports.json (Phase 6) ───────────────────────────────────────────────────
+# Copy reports.json to the build directory so the binary can find it when
+# run from there (the default for cmake --build / make).
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/reports.json
+    ${CMAKE_CURRENT_BINARY_DIR}/reports.json
+    COPYONLY
 )
 
 # ── bench_query_client (Phase 4) ─────────────────────────────────────────────

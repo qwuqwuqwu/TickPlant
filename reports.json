@@ -1,0 +1,35 @@
+{
+  "reports": [
+    {
+      "name": "bbo_summary",
+      "symbols": ["BTC", "ETH", "SOL"],
+      "sources": [
+        {"name": "Binance",  "required": true,  "max_staleness_ms": 3000},
+        {"name": "Coinbase", "required": false,  "max_staleness_ms": 5000},
+        {"name": "Bybit",    "required": false,  "max_staleness_ms": 5000},
+        {"name": "QuestDB",  "required": false,  "max_staleness_ms": 60000}
+      ]
+    },
+    {
+      "name": "cross_venue",
+      "symbols": ["BTC", "ETH"],
+      "sources": [
+        {"name": "Binance",  "required": true,  "max_staleness_ms": 3000},
+        {"name": "Coinbase", "required": true,  "max_staleness_ms": 3000},
+        {"name": "Kraken",   "required": false,  "max_staleness_ms": 5000},
+        {"name": "Bybit",    "required": false,  "max_staleness_ms": 5000},
+        {"name": "FIX",      "required": false,  "max_staleness_ms": 5000},
+        {"name": "QuestDB",  "required": false,  "max_staleness_ms": 60000}
+      ]
+    },
+    {
+      "name": "fix_vs_ws",
+      "symbols": ["BTC", "ETH", "LTC", "XRP"],
+      "sources": [
+        {"name": "FIX",      "required": true,  "max_staleness_ms": 5000},
+        {"name": "Binance",  "required": true,  "max_staleness_ms": 3000},
+        {"name": "QuestDB",  "required": false,  "max_staleness_ms": 60000}
+      ]
+    }
+  ]
+}

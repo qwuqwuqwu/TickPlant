@@ -32,25 +32,38 @@ ParsedRequest parse_request(std::string_view line) {
 
     ParsedRequest req;
 
-    if (line == "HEALTH" || line == "health") {
+    // Upper-case a copy for keyword matching.
+    std::string upper(line);
+    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+
+    if (upper == "HEALTH") {
         req.type = RequestType::HEALTH;
         return req;
     }
 
-    // "SNAPSHOT <symbol>" (case-insensitive prefix)
-    if (line.size() > 9) {
-        auto prefix = line.substr(0, 9);
-        // compare case-insensitively
-        std::string p(prefix);
-        std::transform(p.begin(), p.end(), p.begin(), ::toupper);
-        if (p == "SNAPSHOT ") {
-            req.type   = RequestType::SNAPSHOT;
-            req.symbol = std::string(line.substr(9));
-            // upper-case the symbol
-            std::transform(req.symbol.begin(), req.symbol.end(),
-                           req.symbol.begin(), ::toupper);
-            return req;
-        }
+    if (upper == "LISTREPORTS") {
+        req.type = RequestType::LISTREPORTS;
+        return req;
+    }
+
+    // "SNAPSHOT <symbol>"
+    if (upper.size() > 9 && upper.substr(0, 9) == "SNAPSHOT ") {
+        req.type   = RequestType::SNAPSHOT;
+        req.symbol = std::string(line.substr(9));
+        std::transform(req.symbol.begin(), req.symbol.end(),
+                       req.symbol.begin(), ::toupper);
+        return req;
+    }
+
+    // "REPORT <name>"
+    if (upper.size() > 7 && upper.substr(0, 7) == "REPORT ") {
+        req.type        = RequestType::REPORT;
+        req.report_name = std::string(line.substr(7));
+        // trim trailing whitespace from report name
+        while (!req.report_name.empty() &&
+               (req.report_name.back() == ' ' || req.report_name.back() == '\r'))
+            req.report_name.pop_back();
+        return req;
     }
 
     req.type = RequestType::UNKNOWN;

@@ -93,7 +93,17 @@ std::string EpollQueryServer::handle_line(std::string_view line) {
         auto staleness = engine_->get_feed_staleness_ms();
         return health_response(staleness);
     }
-    return error_response("unknown command — use SNAPSHOT <SYM> or HEALTH");
+    if (req.type == RequestType::REPORT) {
+        if (!pipeline_)
+            return error_response("reporting pipeline not configured");
+        return pipeline_->run(req.report_name);
+    }
+    if (req.type == RequestType::LISTREPORTS) {
+        if (!pipeline_)
+            return error_response("reporting pipeline not configured");
+        return pipeline_->list_reports();
+    }
+    return error_response("unknown command — use SNAPSHOT <SYM>, HEALTH, REPORT <name>, or LISTREPORTS");
 }
 
 // ─── Server loop (Linux-only) ─────────────────────────────────────────────────

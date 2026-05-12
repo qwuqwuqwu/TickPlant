@@ -9,6 +9,8 @@
 //   Request:
 //     SNAPSHOT <canonical_symbol>\n   e.g. "SNAPSHOT BTC\n"
 //     HEALTH\n
+//     REPORT <name>\n                 e.g. "REPORT bbo_summary\n"
+//     LISTREPORTS\n
 //
 //   Response (compact JSON + '\n'):
 //     SNAPSHOT ok:
@@ -25,6 +27,10 @@
 //         {"exchange":"Binance","staleness_ms":45,"live":true},
 //         ...
 //       ]}
+//     REPORT:
+//       {"status":"ok","report":"bbo_summary","generated_at_ms":...,"resolution":{...},"symbols":{...}}
+//     LISTREPORTS:
+//       {"status":"ok","reports":["bbo_summary","cross_venue",...]}
 
 #include "order_book.hpp"
 #include <string>
@@ -34,11 +40,12 @@
 
 // ─── Request parsing ──────────────────────────────────────────────────────────
 
-enum class RequestType { SNAPSHOT, HEALTH, UNKNOWN };
+enum class RequestType { SNAPSHOT, HEALTH, REPORT, LISTREPORTS, UNKNOWN };
 
 struct ParsedRequest {
-    RequestType type   = RequestType::UNKNOWN;
-    std::string symbol;   // canonical symbol for SNAPSHOT, empty for HEALTH
+    RequestType type        = RequestType::UNKNOWN;
+    std::string symbol;     // canonical symbol for SNAPSHOT, empty for others
+    std::string report_name; // report name for REPORT
 };
 
 // Parse one request line (without the trailing '\n').

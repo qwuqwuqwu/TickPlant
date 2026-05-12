@@ -20,6 +20,7 @@
 // servers can be benchmarked identically with bench_query_client.
 
 #include "arbitrage_engine.hpp"
+#include "report_pipeline.hpp"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -29,6 +30,10 @@ class IoUringQueryServer {
 public:
     explicit IoUringQueryServer(ArbitrageEngine* engine, uint16_t port = 9092);
     ~IoUringQueryServer();
+
+    // Attach a ReportPipeline — enables REPORT and LISTREPORTS commands.
+    // Call before start().  Non-owning pointer.
+    void set_pipeline(ReportPipeline* pipeline) noexcept { pipeline_ = pipeline; }
 
     void start();
     void stop();
@@ -40,6 +45,7 @@ private:
     std::string handle_line(std::string_view line);
 
     ArbitrageEngine* engine_;
+    ReportPipeline*  pipeline_ = nullptr;
     uint16_t         port_;
     int              server_fd_ = -1;
     std::thread      thread_;

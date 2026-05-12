@@ -20,6 +20,7 @@
 //   srv.stop();           // drains the loop and joins the thread
 
 #include "arbitrage_engine.hpp"
+#include "report_pipeline.hpp"
 #include <atomic>
 #include <cstdint>
 #include <string>
@@ -29,6 +30,10 @@ class EpollQueryServer {
 public:
     explicit EpollQueryServer(ArbitrageEngine* engine, uint16_t port = 9092);
     ~EpollQueryServer();
+
+    // Attach a ReportPipeline — enables REPORT and LISTREPORTS commands.
+    // Call before start().  Non-owning pointer.
+    void set_pipeline(ReportPipeline* pipeline) noexcept { pipeline_ = pipeline; }
 
     // Start the server thread.  Returns immediately; server accepts connections
     // asynchronously on its own thread.
@@ -44,6 +49,7 @@ private:
     std::string handle_line(std::string_view line);
 
     ArbitrageEngine* engine_;
+    ReportPipeline*  pipeline_ = nullptr;
     uint16_t         port_;
     int              server_fd_ = -1;
     std::thread      thread_;

@@ -10,6 +10,12 @@
 #include "query_server_epoll.hpp"
 #include "query_server_uring.hpp"
 #include "tick_logger.hpp"
+// Phase 6 — reporting pipeline
+#include "data_source_registry.hpp"
+#include "exchange_data_source.hpp"
+#include "questdb_data_source.hpp"
+#include "remote_data_source.hpp"
+#include "report_pipeline.hpp"
 #include <iostream>
 #include <memory>
 #include <signal.h>
@@ -51,6 +57,9 @@ std::unique_ptr<FIXFeedSimulator> g_fix_simulator;
 std::unique_ptr<EpollQueryServer>    g_epoll_server;
 std::unique_ptr<IoUringQueryServer>  g_uring_server;
 std::unique_ptr<TickLogger>          g_tick_logger;
+// Phase 6 — reporting pipeline (owned by main, shared with query servers)
+std::unique_ptr<DataSourceRegistry>  g_ds_registry;
+std::unique_ptr<ReportPipeline>      g_report_pipeline;
 std::atomic<bool> g_shutdown(false);
 std::thread       g_scenario_thread;
 
@@ -322,21 +331,46 @@ int main(int argc, char* argv[]) {
     // Start Prometheus metrics HTTP server (pull model, port 9090)
     Metrics::instance().start(9090);
 
+    // ── Phase 6: Reporting pipeline ───────────────────────────────────────────
+    // Build registry — register one ExchangeDataSource per feed + QuestDB.
+    g_ds_registry = std::make_unique<DataSourceRegistry>();
+    for (const char* ex : {"Binance", "Coinbase", "Kraken", "Bybit", "FIX"}) {
+        g_ds_registry->register_source(
+            std::make_unique<ExchangeDataSource>(g_arbitrage_engine.get(), ex));
+    }
+    g_ds_registry->register_source(
+        std::make_unique<QuestDbDataSource>("127.0.0.1", 9000));
+
+    // RemoteDataSource example: uncomment + set host/port to pull from a
+    // second TickPlant instance (e.g. a co-located Linux box).
+    // g_ds_registry->register_source(
+    //     std::make_unique<RemoteDataSource>("Remote-NYC", "10.0.0.2", 9092));
+
+    // Load reports.json from the working directory.
+    g_report_pipeline = std::make_unique<ReportPipeline>(
+        g_ds_registry.get(), "reports.json");
+
     // Start query server (Phase 4) — selected via --query-server=epoll|uring
     if (query_server_mode == "epoll") {
         g_epoll_server = std::make_unique<EpollQueryServer>(
             g_arbitrage_engine.get(), query_server_port);
+        g_epoll_server->set_pipeline(g_report_pipeline.get());
         g_epoll_server->start();
         std::cout << "Query server (epoll) started on port " << query_server_port << '\n';
-        std::cout << "  SNAPSHOT BTC    → L2 books for all exchanges\n";
-        std::cout << "  HEALTH          → per-feed staleness\n";
+        std::cout << "  SNAPSHOT BTC      → L2 books for all exchanges\n";
+        std::cout << "  HEALTH            → per-feed staleness\n";
+        std::cout << "  LISTREPORTS       → available report names\n";
+        std::cout << "  REPORT bbo_summary → run a reporting pipeline\n";
     } else if (query_server_mode == "uring") {
         g_uring_server = std::make_unique<IoUringQueryServer>(
             g_arbitrage_engine.get(), query_server_port);
+        g_uring_server->set_pipeline(g_report_pipeline.get());
         g_uring_server->start();
         std::cout << "Query server (io_uring) started on port " << query_server_port << '\n';
-        std::cout << "  SNAPSHOT BTC    → L2 books for all exchanges\n";
-        std::cout << "  HEALTH          → per-feed staleness\n";
+        std::cout << "  SNAPSHOT BTC      → L2 books for all exchanges\n";
+        std::cout << "  HEALTH            → per-feed staleness\n";
+        std::cout << "  LISTREPORTS       → available report names\n";
+        std::cout << "  REPORT bbo_summary → run a reporting pipeline\n";
     } else if (!query_server_mode.empty()) {
         std::cerr << "Unknown --query-server mode '" << query_server_mode
                   << "' — use 'epoll' or 'uring'\n";
