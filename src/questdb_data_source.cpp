@@ -36,7 +36,42 @@ std::string QuestDbDataSource::url_encode(const std::string& s) {
     return out;
 }
 
-// ─── HTTP/1.0 GET (raw POSIX sockets) ────────────────────────────────────────
+// ─── Chunked transfer-encoding decoder ───────────────────────────────────────
+// QuestDB's embedded Netty server responds with HTTP/1.1 chunked encoding even
+// when the client requests HTTP/1.0.  Each chunk is prefixed by its size in hex
+// followed by \r\n, and terminated by a zero-length chunk.
+//   e.g.  "3f\r\n{...63 bytes of JSON...}\r\n0\r\n\r\n"
+// Without decoding this, json::parse sees the leading hex size and throws.
+
+static std::string decode_chunked(const std::string& body) {
+    std::string result;
+    result.reserve(body.size());
+    size_t pos = 0;
+    while (pos < body.size()) {
+        // Chunk size line ends with \r\n
+        size_t nl = body.find("\r\n", pos);
+        if (nl == std::string::npos) break;
+
+        // Parse hex chunk size (ignore optional chunk extensions after ';')
+        std::string size_str = body.substr(pos, nl - pos);
+        auto semi = size_str.find(';');
+        if (semi != std::string::npos) size_str.resize(semi);
+
+        size_t chunk_size = 0;
+        try { chunk_size = std::stoul(size_str, nullptr, 16); }
+        catch (...) { break; }
+
+        if (chunk_size == 0) break;   // terminal chunk
+
+        pos = nl + 2;                 // skip size line \r\n
+        if (pos + chunk_size > body.size()) break;
+        result.append(body, pos, chunk_size);
+        pos += chunk_size + 2;        // skip chunk data + trailing \r\n
+    }
+    return result;
+}
+
+// ─── HTTP GET (raw POSIX sockets, chunked-aware) ─────────────────────────────
 
 std::string QuestDbDataSource::http_get(const std::string& path) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -57,9 +92,10 @@ std::string QuestDbDataSource::http_get(const std::string& path) {
         ::close(fd); return {};
     }
 
-    // Send HTTP/1.0 GET (Connection: close — server closes after response)
+    // HTTP/1.1 with Connection: close — keeps persistent-connection overhead
+    // off while still letting QuestDB respond in its native HTTP/1.1 format.
     std::string req =
-        "GET " + path + " HTTP/1.0\r\n"
+        "GET " + path + " HTTP/1.1\r\n"
         "Host: " + host_ + "\r\n"
         "Connection: close\r\n"
         "\r\n";
@@ -67,7 +103,7 @@ std::string QuestDbDataSource::http_get(const std::string& path) {
         ::close(fd); return {};
     }
 
-    // Read full response
+    // Read full response until server closes connection.
     std::string resp;
     resp.reserve(4096);
     char buf[4096];
@@ -78,10 +114,21 @@ std::string QuestDbDataSource::http_get(const std::string& path) {
     }
     ::close(fd);
 
-    // Strip HTTP headers — body starts after "\r\n\r\n"
-    auto pos = resp.find("\r\n\r\n");
-    if (pos == std::string::npos) return {};
-    return resp.substr(pos + 4);
+    // Split headers / body at the blank line.
+    auto sep = resp.find("\r\n\r\n");
+    if (sep == std::string::npos) return {};
+
+    std::string headers = resp.substr(0, sep);
+    std::string body    = resp.substr(sep + 4);
+
+    // Decode chunked encoding if the server used it.
+    // Case-insensitive search — headers are ASCII so tolower is safe here.
+    std::string headers_lc = headers;
+    for (char& c : headers_lc) c = static_cast<char>(::tolower(c));
+    if (headers_lc.find("transfer-encoding: chunked") != std::string::npos)
+        body = decode_chunked(body);
+
+    return body;
 }
 
 // ─── resolve ─────────────────────────────────────────────────────────────────
@@ -118,7 +165,10 @@ ResolutionResult QuestDbDataSource::resolve(
             return {ResolutionStatus::STALE, "QuestDB: order_book table is empty"};
         }
     } catch (...) {
-        return {ResolutionStatus::UNREACHABLE, "QuestDB: failed to parse probe response"};
+        // Show first 120 chars of raw body to make future diagnosis easier.
+        std::string preview = body.substr(0, 120);
+        return {ResolutionStatus::UNREACHABLE,
+                "QuestDB: parse error — body preview: " + preview};
     }
     return {ResolutionStatus::OK, ""};
 }
