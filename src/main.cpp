@@ -17,6 +17,7 @@
 #include "remote_data_source.hpp"
 #include "report_pipeline.hpp"
 #include "simple_query_server.hpp"
+#include <nlohmann/json.hpp>
 #include <iostream>
 #include <memory>
 #include <signal.h>
@@ -125,10 +126,12 @@ int main(int argc, char* argv[]) {
     // report-client mode: --add-remote "label:host:port"  (repeatable)
     //                     --questdb-host <host>
     //                     --questdb-port <port>
+    //                     --pretty          pretty-print JSON output
     struct RemoteSpec { std::string label, host; uint16_t port; };
     std::vector<RemoteSpec> remote_specs;
     std::string questdb_host = "127.0.0.1";
     uint16_t    questdb_port = 9000;
+    bool        pretty       = false;
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -167,6 +170,8 @@ int main(int argc, char* argv[]) {
             questdb_host = argv[++i];
         else if (arg == "--questdb-port" && i + 1 < argc)
             questdb_port = static_cast<uint16_t>(std::stoi(argv[++i]));
+        else if (arg == "--pretty")
+            pretty = true;
     }
 
     // ── mode: report-client ───────────────────────────────────────────────────
@@ -197,6 +202,16 @@ int main(int argc, char* argv[]) {
         std::cout << "\nQuestDB: " << questdb_host << ':' << questdb_port << '\n';
         std::cout << "Commands: LISTREPORTS | REPORT <name> | quit\n\n";
 
+        // Pretty-print helper: re-parse and indent when --pretty is set.
+        auto print_json = [&](const std::string& raw) {
+            if (!pretty) { std::cout << raw; return; }
+            try {
+                std::cout << nlohmann::json::parse(raw).dump(2) << '\n';
+            } catch (...) {
+                std::cout << raw;   // fallback: print as-is on parse error
+            }
+        };
+
         std::string line;
         while (true) {
             std::cout << "> " << std::flush;
@@ -204,12 +219,12 @@ int main(int argc, char* argv[]) {
             if (line == "quit" || line == "exit") break;
             if (line.empty()) continue;
             if (line == "LISTREPORTS" || line == "listreports") {
-                std::cout << g_report_pipeline->list_reports();
+                print_json(g_report_pipeline->list_reports());
             } else if (line.rfind("REPORT ", 0) == 0 ||
                        line.rfind("report ", 0) == 0) {
                 std::string name = line.substr(7);
                 while (!name.empty() && name.back() == ' ') name.pop_back();
-                std::cout << g_report_pipeline->run(name);
+                print_json(g_report_pipeline->run(name));
             } else {
                 std::cout << "{\"status\":\"error\",\"message\":\"use LISTREPORTS or REPORT <name>\"}\n";
             }

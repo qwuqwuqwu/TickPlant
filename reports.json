@@ -36,8 +36,8 @@
       "name": "remote_vs_local",
       "symbols": ["BTC", "ETH", "SOL"],
       "sources": [
-        {"name": "Remote",  "required": true,  "max_staleness_ms": 5000},
-        {"name": "FIX",     "required": true,  "max_staleness_ms": 5000},
+        {"name": "Linux",   "required": true,  "max_staleness_ms": 5000},
+        {"name": "Mac-FIX", "required": true,  "max_staleness_ms": 5000},
         {"name": "QuestDB", "required": false,  "max_staleness_ms": 60000}
       ]
     }
