@@ -16,6 +16,7 @@
 #include "questdb_data_source.hpp"
 #include "remote_data_source.hpp"
 #include "report_pipeline.hpp"
+#include "simple_query_server.hpp"
 #include <iostream>
 #include <memory>
 #include <signal.h>
@@ -56,6 +57,7 @@ std::unique_ptr<ArbitrageEngine> g_arbitrage_engine;
 std::unique_ptr<FIXFeedSimulator> g_fix_simulator;
 std::unique_ptr<EpollQueryServer>    g_epoll_server;
 std::unique_ptr<IoUringQueryServer>  g_uring_server;
+std::unique_ptr<SimpleQueryServer>   g_simple_server;
 std::unique_ptr<TickLogger>          g_tick_logger;
 // Phase 6 — reporting pipeline (owned by main, shared with query servers)
 std::unique_ptr<DataSourceRegistry>  g_ds_registry;
@@ -105,16 +107,34 @@ int main(int argc, char* argv[]) {
     load_dotenv();
 
     // Parse command-line arguments
-    int  max_reports       = 0;     // 0 = unlimited (default)
-    int  burst_interval_ms = 0;     // 0 = no burst
-    int  burst_multiplier  = 10;    // rate multiplier during burst
+    // ── Mode selection ────────────────────────────────────────────────────────
+    // --mode full          (default) full stack: WebSocket + FIX + query server
+    // --mode fix-server    Mac: FIX simulator + SimpleQueryServer only
+    // --mode report-client Mac: interactive report pipeline CLI
+    std::string mode = "full";
+
+    int  max_reports       = 0;
+    int  burst_interval_ms = 0;
+    int  burst_multiplier  = 10;
     int  burst_duration_ms = 2000;
-    bool chaos_test        = false; // --chaos-test: run structured scenario sequence
-    std::string query_server_mode;  // "", "epoll", "uring"
+    bool chaos_test        = false;
+    std::string query_server_mode;     // "epoll" | "uring"
     uint16_t    query_server_port = 9092;
+    uint16_t    fix_server_port   = 9093;  // SimpleQueryServer port (fix-server mode)
+
+    // report-client mode: --add-remote "label:host:port"  (repeatable)
+    //                     --questdb-host <host>
+    //                     --questdb-port <port>
+    struct RemoteSpec { std::string label, host; uint16_t port; };
+    std::vector<RemoteSpec> remote_specs;
+    std::string questdb_host = "127.0.0.1";
+    uint16_t    questdb_port = 9000;
+
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
-        if (arg == "--max-reports" && i + 1 < argc)
+        if (arg == "--mode" && i + 1 < argc)
+            mode = argv[++i];
+        else if (arg == "--max-reports" && i + 1 < argc)
             max_reports = std::stoi(argv[++i]);
         else if (arg == "--burst-interval-ms" && i + 1 < argc)
             burst_interval_ms = std::stoi(argv[++i]);
@@ -125,11 +145,145 @@ int main(int argc, char* argv[]) {
         else if (arg == "--chaos-test")
             chaos_test = true;
         else if (arg == "--query-server" && i + 1 < argc)
-            query_server_mode = argv[++i];   // "epoll" or "uring"
+            query_server_mode = argv[++i];
         else if (arg == "--query-port" && i + 1 < argc)
             query_server_port = static_cast<uint16_t>(std::stoi(argv[++i]));
+        else if (arg == "--fix-port" && i + 1 < argc)
+            fix_server_port = static_cast<uint16_t>(std::stoi(argv[++i]));
+        else if (arg == "--add-remote" && i + 1 < argc) {
+            // format: "label:host:port"
+            std::string spec = argv[++i];
+            auto p1 = spec.find(':');
+            auto p2 = spec.rfind(':');
+            if (p1 != std::string::npos && p2 != p1) {
+                RemoteSpec rs;
+                rs.label = spec.substr(0, p1);
+                rs.host  = spec.substr(p1 + 1, p2 - p1 - 1);
+                rs.port  = static_cast<uint16_t>(std::stoi(spec.substr(p2 + 1)));
+                remote_specs.push_back(std::move(rs));
+            }
+        }
+        else if (arg == "--questdb-host" && i + 1 < argc)
+            questdb_host = argv[++i];
+        else if (arg == "--questdb-port" && i + 1 < argc)
+            questdb_port = static_cast<uint16_t>(std::stoi(argv[++i]));
     }
 
+    // ── mode: report-client ───────────────────────────────────────────────────
+    // Pure pipeline process — no WebSocket feeds, no FIX simulator.
+    // Reads report commands from stdin; writes JSON to stdout.
+    // Works on Mac (no epoll/uring required).
+    //
+    // Usage:
+    //   ./binance_dashboard --mode report-client \
+    //       --add-remote "Mac-FIX:127.0.0.1:9093" \
+    //       --add-remote "Linux:192.168.88.9:9092" \
+    //       --questdb-host 192.168.88.9
+    if (mode == "report-client") {
+        g_ds_registry = std::make_unique<DataSourceRegistry>();
+        for (const auto& rs : remote_specs)
+            g_ds_registry->register_source(
+                std::make_unique<RemoteDataSource>(rs.label, rs.host, rs.port));
+        g_ds_registry->register_source(
+            std::make_unique<QuestDbDataSource>(questdb_host, questdb_port));
+        g_report_pipeline = std::make_unique<ReportPipeline>(
+            g_ds_registry.get(), "reports.json");
+
+        std::cout << "TickPlant Report Client\n";
+        std::cout << "=======================\n";
+        std::cout << "Remotes registered:";
+        for (const auto& rs : remote_specs)
+            std::cout << "  " << rs.label << " → " << rs.host << ':' << rs.port;
+        std::cout << "\nQuestDB: " << questdb_host << ':' << questdb_port << '\n';
+        std::cout << "Commands: LISTREPORTS | REPORT <name> | quit\n\n";
+
+        std::string line;
+        while (true) {
+            std::cout << "> " << std::flush;
+            if (!std::getline(std::cin, line)) break;
+            if (line == "quit" || line == "exit") break;
+            if (line.empty()) continue;
+            if (line == "LISTREPORTS" || line == "listreports") {
+                std::cout << g_report_pipeline->list_reports();
+            } else if (line.rfind("REPORT ", 0) == 0 ||
+                       line.rfind("report ", 0) == 0) {
+                std::string name = line.substr(7);
+                while (!name.empty() && name.back() == ' ') name.pop_back();
+                std::cout << g_report_pipeline->run(name);
+            } else {
+                std::cout << "{\"status\":\"error\",\"message\":\"use LISTREPORTS or REPORT <name>\"}\n";
+            }
+        }
+        return 0;
+    }
+
+    // ── mode: fix-server ──────────────────────────────────────────────────────
+    // Runs FIX simulator + ArbitrageEngine + SimpleQueryServer.
+    // No WebSocket clients, no dashboard, no tick logger.
+    // Works on Mac.
+    //
+    // Usage:
+    //   ./binance_dashboard --mode fix-server --fix-port 9093
+    if (mode == "fix-server") {
+        std::cout << "TickPlant FIX Data Server\n";
+        std::cout << "=========================\n";
+        std::cout << "FIX query server port: " << fix_server_port << '\n';
+
+        setup_signal_handlers();
+        g_arbitrage_engine = std::make_unique<ArbitrageEngine>();
+        g_arbitrage_engine->set_min_profit_bps(0.1);
+
+        // ── Build reporting pipeline so REPORT commands work here too ─────────
+        g_ds_registry = std::make_unique<DataSourceRegistry>();
+        g_ds_registry->register_source(
+            std::make_unique<ExchangeDataSource>(g_arbitrage_engine.get(), "FIX"));
+        g_ds_registry->register_source(
+            std::make_unique<QuestDbDataSource>(questdb_host, questdb_port));
+        // Add any remotes passed on the CLI (e.g. a Linux box for cross-venue)
+        for (const auto& rs : remote_specs)
+            g_ds_registry->register_source(
+                std::make_unique<RemoteDataSource>(rs.label, rs.host, rs.port));
+        g_report_pipeline = std::make_unique<ReportPipeline>(
+            g_ds_registry.get(), "reports.json");
+
+        g_simple_server = std::make_unique<SimpleQueryServer>(
+            g_arbitrage_engine.get(), fix_server_port);
+        g_simple_server->set_pipeline(g_report_pipeline.get());
+        g_simple_server->start();
+
+        g_fix_simulator = std::make_unique<FIXFeedSimulator>("FIX");
+        g_fix_simulator->add_symbol({"BTCUSD",  65000.0, 0.001});
+        g_fix_simulator->add_symbol({"ETHUSD",   3500.0, 0.001});
+        g_fix_simulator->add_symbol({"SOLUSD",    140.0, 0.002});
+        g_fix_simulator->add_symbol({"LTCUSD",     85.0, 0.002});
+        g_fix_simulator->add_symbol({"XRPUSD",      0.52, 0.002});
+        g_fix_simulator->add_symbol({"ADAUSD",      0.45, 0.002});
+        g_fix_simulator->add_symbol({"ATOMUSD",    10.0,  0.002});
+        g_fix_simulator->add_symbol({"AVAXUSD",    35.0,  0.002});
+        g_fix_simulator->add_symbol({"LINKUSD",    14.0,  0.002});
+        g_fix_simulator->add_symbol({"UNIUSD",      8.0,  0.002});
+        g_fix_simulator->set_snapshot_interval_ms(5000);
+        g_fix_simulator->set_incremental_hz(20);
+        g_fix_simulator->set_callback([&](const std::string& /*raw*/,
+                                          const FIXMessage& msg) {
+            g_arbitrage_engine->update_fix_data(msg);
+        });
+        g_fix_simulator->start();
+
+        g_arbitrage_engine->start();
+        std::cout << "FIX simulator running — 10 symbols at 20 hz\n";
+        std::cout << "SNAPSHOT / HEALTH / REPORT served on :" << fix_server_port << '\n';
+
+        while (!g_shutdown)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+
+        g_fix_simulator->stop();
+        g_arbitrage_engine->stop();
+        g_simple_server->stop();
+        return 0;
+    }
+
+    // ── mode: full (default) ──────────────────────────────────────────────────
     std::cout << "Multi-Exchange Crypto Arbitrage Dashboard\n";
     std::cout << "==========================================\n";
 #ifdef USE_MPSC_QUEUE
@@ -331,22 +485,15 @@ int main(int argc, char* argv[]) {
     // Start Prometheus metrics HTTP server (pull model, port 9090)
     Metrics::instance().start(9090);
 
-    // ── Phase 6: Reporting pipeline ───────────────────────────────────────────
-    // Build registry — register one ExchangeDataSource per feed + QuestDB.
+    // ── Phase 6: Reporting pipeline (full mode) ───────────────────────────────
+    // All 5 feeds are local — register one ExchangeDataSource each.
     g_ds_registry = std::make_unique<DataSourceRegistry>();
     for (const char* ex : {"Binance", "Coinbase", "Kraken", "Bybit", "FIX"}) {
         g_ds_registry->register_source(
             std::make_unique<ExchangeDataSource>(g_arbitrage_engine.get(), ex));
     }
     g_ds_registry->register_source(
-        std::make_unique<QuestDbDataSource>("127.0.0.1", 9000));
-
-    // RemoteDataSource example: uncomment + set host/port to pull from a
-    // second TickPlant instance (e.g. a co-located Linux box).
-    // g_ds_registry->register_source(
-    //     std::make_unique<RemoteDataSource>("Remote-NYC", "10.0.0.2", 9092));
-
-    // Load reports.json from the working directory.
+        std::make_unique<QuestDbDataSource>(questdb_host, questdb_port));
     g_report_pipeline = std::make_unique<ReportPipeline>(
         g_ds_registry.get(), "reports.json");
 
@@ -357,20 +504,20 @@ int main(int argc, char* argv[]) {
         g_epoll_server->set_pipeline(g_report_pipeline.get());
         g_epoll_server->start();
         std::cout << "Query server (epoll) started on port " << query_server_port << '\n';
-        std::cout << "  SNAPSHOT BTC      → L2 books for all exchanges\n";
-        std::cout << "  HEALTH            → per-feed staleness\n";
-        std::cout << "  LISTREPORTS       → available report names\n";
-        std::cout << "  REPORT bbo_summary → run a reporting pipeline\n";
+        std::cout << "  SNAPSHOT BTC       → L2 books for all exchanges\n";
+        std::cout << "  HEALTH             → per-feed staleness\n";
+        std::cout << "  LISTREPORTS        → available report names\n";
+        std::cout << "  REPORT <name>      → run a reporting pipeline\n";
     } else if (query_server_mode == "uring") {
         g_uring_server = std::make_unique<IoUringQueryServer>(
             g_arbitrage_engine.get(), query_server_port);
         g_uring_server->set_pipeline(g_report_pipeline.get());
         g_uring_server->start();
         std::cout << "Query server (io_uring) started on port " << query_server_port << '\n';
-        std::cout << "  SNAPSHOT BTC      → L2 books for all exchanges\n";
-        std::cout << "  HEALTH            → per-feed staleness\n";
-        std::cout << "  LISTREPORTS       → available report names\n";
-        std::cout << "  REPORT bbo_summary → run a reporting pipeline\n";
+        std::cout << "  SNAPSHOT BTC       → L2 books for all exchanges\n";
+        std::cout << "  HEALTH             → per-feed staleness\n";
+        std::cout << "  LISTREPORTS        → available report names\n";
+        std::cout << "  REPORT <name>      → run a reporting pipeline\n";
     } else if (!query_server_mode.empty()) {
         std::cerr << "Unknown --query-server mode '" << query_server_mode
                   << "' — use 'epoll' or 'uring'\n";

@@ -45,6 +45,7 @@ add_executable(binance_dashboard
     src/questdb_data_source.cpp
     src/remote_data_source.cpp
     src/report_pipeline.cpp
+    src/simple_query_server.cpp
 )
 
 # Include directories
