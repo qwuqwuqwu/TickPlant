@@ -1,373 +1,415 @@
 # TickPlant — Low-Latency Market Data Platform
 
-A high-performance market data platform written in C++20. Aggregates live
-L2 order books from four cryptocurrency exchanges and a FIX feed simulator,
-detects cross-exchange arbitrage opportunities in real time, and exposes the
-data via a microsecond-latency TCP query server backed by either **epoll** or
-**io_uring**.
+A high-performance market data platform written in C++20.  
+Aggregates real-time L2 order books from five exchanges, persists BBO ticks
+to QuestDB, and exposes a config-driven reporting pipeline over a custom TCP
+protocol — deployable across two machines with two cooperating processes on
+the client side.
 
-## Features
+---
 
-- **Real-time L2 Order Books**: Live WebSocket feeds from 4 exchanges
-  - Binance (depth20, 100 ms)
-  - Coinbase Advanced Trade (level2 full book)
-  - Kraken v2 (BBO event-triggered)
-  - Bybit (orderbook.50)
+## Table of Contents
 
-- **FIX Feed Simulator**: Synthetic burst feed over TCP using a hand-rolled
-  FIX 4.2 parser — no third-party FIX library
+1. [Architecture Overview](#architecture-overview)
+2. [Run Modes](#run-modes)
+3. [Wire Protocol](#wire-protocol)
+4. [Reporting Pipeline](#reporting-pipeline)
+5. [Build](#build)
+6. [Running the Distributed Setup](#running-the-distributed-setup)
+7. [Benchmark Results](#benchmark-results)
+8. [Component Reference](#component-reference)
 
-- **Multi-Symbol Monitoring**: 9 cryptocurrency pairs simultaneously
-  - BTC, ETH, ADA, DOT, SOL, MATIC, AVAX, LTC, LINK
-
-- **Cross-Exchange Arbitrage Detection**: Real-time L2 spread comparison
-  - Configurable minimum profit threshold (default: 5 basis points)
-  - Quantity-gated: phantom arbitrage from zero-size quotes filtered out
-
-- **Phase 4 — TCP Query Server**: epoll or io_uring backend, newline-delimited
-  protocol, `SNAPSHOT <SYM>` and `HEALTH` commands
-
-- **Prometheus Metrics**: per-feed staleness, book depth, arbitrage alerts
-  (pull model, port 9090)
-
-## Prerequisites
-
-### macOS (Your Setup)
-```bash
-# Install vcpkg (package manager)
-git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg
-./bootstrap-vcpkg.sh
-export VCPKG_ROOT=$(pwd)
-export PATH=$VCPKG_ROOT:$PATH
-
-# Install dependencies
-./vcpkg install websocketpp nlohmann-json openssl boost-system boost-thread boost-chrono boost-random
-
-# Install CMake if not already installed
-brew install cmake
-```
-
-### Required Dependencies
-- **C++20 compatible compiler** (Clang 12+ or GCC 10+)
-- **CMake 3.20+**
-- **vcpkg** (for package management)
-- **OpenSSL** (for TLS connections)
-- **WebSocket++** (for WebSocket client)
-- **nlohmann/json** (for JSON parsing)
-- **Boost libraries** (system, thread, chrono, random)
-
-## Build Instructions
-
-```bash
-# Clone and navigate to project directory
-cd binance_dashboard
-
-# Create build directory
-mkdir build && cd build
-
-# Configure with vcpkg integration
-cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-
-# Build the project
-make -j$(nproc)
-
-# Or for release build with optimizations
-cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-```
-
-## Usage
-
-```bash
-# Run with epoll query server (Linux)
-./binance_dashboard --query-server epoll --query-port 9092
-
-# Run with io_uring query server (Linux, requires liburing)
-./binance_dashboard --query-server uring --query-port 9092
-
-# Query a live L2 snapshot
-echo "SNAPSHOT BTC" | nc -q 1 127.0.0.1 9092
-
-# Check feed health
-echo "HEALTH" | nc -q 1 127.0.0.1 9092
-
-# Run the RTT benchmark (standalone, no deps)
-./bench_query_client --sym BTC --n 10000 --warmup 500
-
-# Benchmark with CPU pinning (Linux, after isolcpus=2,3 in grub)
-taskset -c 3 ./binance_dashboard --query-server epoll --query-port 9092 &
-taskset -c 2 ./bench_query_client --sym BTC --n 10000 --warmup 500
-```
-
-## Architecture
-
-### Low-Latency Design
-- **`shared_mutex` on order books** — query readers and arbitrage detection
-  run concurrently; only WebSocket update callbacks hold exclusive locks
-- **Edge-triggered epoll (EPOLLET)** — one syscall drains all pending data;
-  no redundant wake-ups
-- **io_uring ring buffer** — RECV/SEND submitted via shared SQ; completions
-  harvested from CQ without per-operation kernel crossings
-- **TCP_NODELAY on all connections** — disables Nagle; eliminates 40 ms
-  ACK-delay on small request/response messages
-- **CPU affinity + `isolcpus`** — query server thread pinned to a fully
-  isolated core (no OS scheduler ticks, no competing threads)
-
-### Components
-- `binance_client`: WebSocket client — Binance depth20 @ 100 ms
-- `coinbase_client`: WebSocket client — Coinbase Advanced Trade level2
-- `kraken_client`: WebSocket client — Kraken v2 BBO event-triggered
-- `bybit_client`: WebSocket client — Bybit orderbook.50
-- `fix_feed_simulator`: Synthetic TCP FIX 4.2 burst feed
-- `fix_parser`: Hand-rolled FIX 4.2 tag parser (no third-party lib)
-- `order_book`: Thread-safe L2 order book with `shared_mutex`
-- `arbitrage_engine`: Real-time cross-exchange arbitrage detection
-- `query_server_epoll`: Edge-triggered epoll query server (Linux)
-- `query_server_uring`: io_uring query server via liburing (Linux)
-- `metrics`: Prometheus pull-model metrics (port 9090)
-- `dashboard`: Terminal UI with color-coded live display
-
-## Monitored Symbols
-
-The dashboard tracks these cryptocurrency pairs:
-- **BTCUSDT** - Bitcoin
-- **ETHUSDT** - Ethereum
-- **ADAUSDT** - Cardano
-- **DOTUSDT** - Polkadot
-- **SOLUSDT** - Solana
-- **MATICUSDT** - Polygon
-- **AVAXUSDT** - Avalanche
-- **LTCUSDT** - Litecoin
-- **LINKUSDT** - Chainlink
-
-## Dashboard Features
-
-### Real-time Display
-- **Current Prices**: Live bid/ask prices
-- **Spreads**: Real-time spread in basis points
-- **Volume**: Available liquidity at best prices
-- **Status**: Connection health (LIVE/SLOW/STALE)
-- **Statistics**: Update counts and average spreads
-
-### Color Coding
-- **🟢 Green**: Price increases, active connections
-- **🔴 Red**: Price decreases, connection issues
-- **🟡 Yellow**: Neutral/warning states
-- **🔵 Blue**: Information display
-- **🔷 Cyan**: Headers and borders
-
-### Controls
-- **Ctrl+C**: Graceful shutdown
-- **Auto-refresh**: Every 500ms
-- **Auto-reconnect**: On connection failures
-
-## Phase 4 — Low-Latency Query Server
-
-A TCP query server exposes live L2 order-book snapshots over a simple
-newline-delimited text protocol.  Two I/O backends are implemented and
-benchmarked head-to-head.
-
-### Wire Protocol
-
-```
-# Request (client → server)
-SNAPSHOT BTC\n
-HEALTH\n
-
-# Response (server → client) — compact JSON + newline
-{"status":"ok","symbol":"BTC","books":[{"exchange":"Binance","bids":[[65432.10,0.42],...],"asks":[[65433.00,0.18],...]},...]}
-{"status":"ok","feeds":{"Binance":{"staleness_ms":12,"live":true},...}}
-```
-
-### I/O Backends
-
-| Backend | Mechanism | Syscalls per request |
-|---------|-----------|----------------------|
-| **epoll** | `epoll_wait` → `recv` → `send` (edge-triggered) | ~3 |
-| **io_uring** | `io_uring_enter` batches RECV+SEND via shared ring buffer | ~1 |
-
-Launch with `--query-server epoll` or `--query-server uring` (default port 9092).
-
-### Benchmark Results
-
-**Hardware**: Intel Core i5-2410M (Sandy Bridge, 2× physical cores, 4× logical, 2.3 GHz)  
-**OS**: Ubuntu 22.04, kernel 6.8, `isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3`  
-**Method**: server pinned to isolated CPU 3 (`taskset -c 3`), client pinned to isolated
-CPU 2 (`taskset -c 2`); single persistent TCP connection; 10,000 measured requests,
-500 warmup; loopback interface
-
-```
-bench_query_client --sym BTC --n 10000 --warmup 500
-```
-
-| Metric | epoll | io_uring |
-|--------|------:|--------:|
-| Throughput | ~600–620 req/s | ~490–650 req/s |
-| p50 RTT | ~1.6 ms | ~1.6 ms |
-| p99 RTT | ~2.0 ms | ~1.7–8.0 ms |
-| p999 RTT | ~2–8 ms | ~2–14 ms |
-
-**Both backends achieve ~1.6 ms median on this hardware.**  Tail latency
-is dominated by L3 cache pressure from the four concurrent WebSocket
-ingestion threads (Binance, Coinbase, Kraken, Bybit) which share the
-same 3 MB L3 cache as the isolated query-server core.  Run-to-run
-variance is high enough that per-run p999 numbers are not directly
-comparable.
-
-The meaningful comparison is **architectural**, not numeric:
-
-| Property | epoll | io_uring |
-|----------|-------|----------|
-| Syscalls per request | ~3 (`epoll_wait` + `recv` + `send`) | ~1 (`io_uring_enter` batches via ring) |
-| Kernel boundary crossings | Per-event | Per-batch |
-| Memory model | FD-based event table | Shared SQ/CQ ring buffers |
-| Best fit | Predictable single-connection latency | High-concurrency throughput |
-
-On production hardware with dedicated isolated cores and no shared-cache
-neighbours, io_uring's syscall reduction translates directly to lower
-median and tail latency at high connection counts.
-
-### Key Engineering Decisions
-
-- **`shared_mutex` for order-book reads** — the arbitrage calculation loop
-  originally held an exclusive write lock on `ws_books_mutex_` while scanning
-  all books and updating Prometheus metrics, blocking every concurrent query
-  reader for milliseconds.  Downgrading to `shared_lock` in all read-only paths
-  (`get_snapshots`, `list_symbols`, `calculate_arbitrage`) dropped median RTT
-  from ~14 ms to ~1.6 ms.
-
-- **Edge-triggered epoll (EPOLLET)** — avoids redundant `epoll_wait` wake-ups;
-  the server drains all available bytes per event.
-
-- **TCP_NODELAY on both sides** — disables Nagle's algorithm; prevents 40 ms
-  ACK-delay inflation on small request lines.
-
-- **1 ms poll timeout** — both servers check `running_` every 1 ms rather than
-  50 ms, bounding worst-case shutdown latency and eliminating timeout-induced
-  tail spikes in the io_uring CQE wait loop.
-
-## Performance Characteristics
-
-### Typical Performance (on Intel i5 MacBook Pro)
-- **Latency**: 1-5ms from WebSocket to display
-- **Throughput**: 1000-5000 messages/second
-- **Memory Usage**: ~50MB steady state
-- **CPU Usage**: 5-15% on 4-core system
-
-### Network Requirements
-- **Bandwidth**: ~10-50 KB/s depending on market activity
-- **Internet**: Stable connection to stream.binance.com
-- **Firewall**: Allow HTTPS/WSS connections on port 9443
+---
 
 ## Architecture Overview
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│                 │    │                  │    │                 │
-│  Binance API    │───▶│  WebSocket       │───▶│  Terminal       │
-│  (WebSocket)    │    │  Client          │    │  Dashboard      │
-│                 │    │                  │    │                 │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                              │
-                              ▼
-                       ┌──────────────────┐
-                       │                  │
-                       │  JSON Parser     │
-                       │  Message Queue   │
-                       │                  │
-                       └──────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                  Linux Server (192.168.88.9)             │
+│                                                          │
+│  Binance ──┐                                             │
+│  Coinbase ─┤                                             │
+│  Bybit ────┼──▶ ArbitrageEngine ──▶ TickLogger ──▶ QuestDB :9000
+│  Kraken ───┤         │                                   │
+│  FIX sim ──┘         ▼                                   │
+│                 OrderBook[]                              │
+│                      │                                   │
+│                      ▼                                   │
+│             QueryServer (epoll / io_uring)  :9092        │
+└─────────────────────────────────────────────────────────┘
+                        ▲  SNAPSHOT / HEALTH / REPORT
+                        │
+┌─────────────────────────────────────────────────────────┐
+│                  Mac Client                              │
+│                                                          │
+│  Process 1: fix-server                                   │
+│    FIX simulator ──▶ ArbitrageEngine                     │
+│    SimpleQueryServer  :9093                              │
+│                                                          │
+│  Process 2: report-client  ◀── user REPL                 │
+│    RemoteDataSource  ──▶ Linux  :9092                    │
+│    RemoteDataSource  ──▶ Mac-FIX :9093                   │
+│    QuestDbDataSource ──▶ QuestDB :9000                   │
+│    ReportPipeline    ──▶ JSON report                     │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Key Components
+**Data flow summary:**
 
-1. **BinanceWebSocketClient**: Manages WebSocket connection and data parsing
-2. **TerminalDashboard**: Handles display logic and real-time updates  
-3. **TickerData**: Data structure for market information
-4. **Message Threading**: Separate threads for networking and display
-
-## Troubleshooting
-
-### Build Issues
-```bash
-# If CMake can't find vcpkg packages:
-export VCPKG_ROOT=/path/to/vcpkg
-cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-
-# If missing dependencies:
-cd $VCPKG_ROOT
-./vcpkg install websocketpp nlohmann-json openssl boost-system boost-thread
-```
-
-### Runtime Issues
-```bash
-# Connection timeout:
-# - Check internet connection
-# - Verify Binance API accessibility
-# - Try running with verbose output
-
-# Display issues:
-# - Ensure terminal supports UTF-8 and ANSI colors
-# - Try resizing terminal window
-# - Use modern terminal (Terminal.app, iTerm2)
-```
-
-### Network Issues
-- **Firewall**: Ensure WSS connections are allowed
-- **Proxy**: Set HTTP_PROXY/HTTPS_PROXY if needed
-- **DNS**: Verify stream.binance.com resolves correctly
-
-## Development Notes
-
-### Performance Optimizations
-- Zero-copy JSON parsing where possible
-- Lock-free data structures for message passing
-- Efficient string formatting and display updates
-- Memory pool allocation for high-frequency objects
-
-### Code Quality
-- Modern C++20 features and best practices
-- RAII for resource management
-- Thread-safe design with minimal locking
-- Comprehensive error handling and logging
-
-### Extension Points
-- Easy to add new exchanges (inherit from base client)
-- Configurable symbol lists
-- Pluggable display formats (JSON, CSV, database)
-- Arbitrage detection algorithms (next phase)
-
-## Exchange-Specific Notes
-
-### Binance.US
-- Limited symbol availability compared to Binance.com
-- Wider spreads due to lower liquidity
-- Some pairs (MATIC, LINK) not available on WebSocket
-
-### Coinbase
-- Excellent liquidity and tight spreads
-- Full symbol coverage
-- Advanced Trade WebSocket API
-
-### Kraken
-- BBO (Best Bid/Offer) event triggers for faster updates
-- Competitive spreads
-- Full symbol coverage
-- V2 WebSocket API
-
-## Future Enhancements
-
-- Execution capabilities (place actual trades)
-- Historical arbitrage opportunity logging
-- Performance metrics and analytics
-- Additional exchange support
-- Web-based dashboard
-- Alert notifications
-
-## License
-
-This project is for educational and demonstration purposes. Not intended for production trading.
+| Layer | What happens |
+|---|---|
+| Ingestion | WebSocket clients push `OrderBookSnapshot` deltas into `ArbitrageEngine` |
+| Storage | `TickLogger` writes BBO ticks to QuestDB via ILP over TCP (nanosecond timestamps) |
+| Query | `QueryServer` serves `SNAPSHOT` / `HEALTH` / `REPORT` over a newline-delimited TCP protocol |
+| Reporting | `ReportPipeline` fans out to all registered `DataSource`s concurrently, resolves staleness, and generates a structured JSON report |
 
 ---
 
-**Note**: This application connects to live market data but does not perform any trading operations. It's designed for market analysis and system development purposes.
+## Run Modes
+
+The binary is started with `--mode <mode>`. Three modes are supported:
+
+### `--mode full` (Linux)
+
+Runs everything on one machine: all five exchange feeds, QuestDB persistence,
+and the full query server.
+
+```bash
+./binance_dashboard \
+  --mode full \
+  --query-server epoll \   # or: uring
+  --query-port 9092
+```
+
+### `--mode fix-server` (Mac — Process 1)
+
+Runs the FIX 4.4 simulator and a portable `select()`-based query server.
+No WebSocket clients — this process is the local FIX data node.
+
+```bash
+./binance_dashboard \
+  --mode fix-server \
+  --fix-port 9093
+```
+
+### `--mode report-client` (Mac — Process 2)
+
+Interactive REPL that aggregates data from remote nodes and QuestDB.
+Accepts `--add-remote` (repeatable) and `--questdb-host/port`.
+
+```bash
+./binance_dashboard \
+  --mode report-client \
+  --add-remote "Mac-FIX:127.0.0.1:9093" \
+  --add-remote "Linux:192.168.88.9:9092" \
+  --questdb-host 192.168.88.9 \
+  --questdb-port 9000 \
+  --pretty
+```
+
+`--pretty` pretty-prints JSON output (uses `jq`-style 2-space indent).
+
+### CLI flags summary
+
+| Flag | Modes | Description |
+|---|---|---|
+| `--mode <full\|fix-server\|report-client>` | all | Selects run mode |
+| `--query-server <epoll\|uring>` | full | I/O backend for query server |
+| `--query-port <port>` | full | Query server listen port (default 9092) |
+| `--fix-port <port>` | fix-server | SimpleQueryServer listen port (default 9093) |
+| `--add-remote "label:host:port"` | report-client | Register a remote data source (repeatable) |
+| `--questdb-host <host>` | report-client | QuestDB host (default 127.0.0.1) |
+| `--questdb-port <port>` | report-client | QuestDB REST port (default 9000) |
+| `--pretty` | report-client | Pretty-print JSON output |
+
+---
+
+## Wire Protocol
+
+All servers (epoll, io_uring, SimpleQueryServer) speak the same
+newline-delimited text protocol over TCP.
+
+### Commands
+
+```
+SNAPSHOT <SYM>      — L2 order book snapshot for one symbol
+HEALTH              — feed staleness for all connected exchanges
+REPORT <name>       — run a named report from reports.json
+LISTREPORTS         — list all configured report names
+```
+
+### Example session
+
+```
+$ nc 192.168.88.9 9092
+
+HEALTH
+{"status":"ok","feeds":{"Binance":{"staleness_ms":18,"live":true},"Kraken":{"staleness_ms":34,"live":true},...}}
+
+SNAPSHOT BTC
+{"status":"ok","symbol":"BTC","books":[{"exchange":"Binance","bids":[[80801.49,0.42],...],"asks":[[80813.41,0.18],...]},...]}
+
+LISTREPORTS
+{"status":"ok","reports":["bbo_summary","cross_venue","fix_vs_ws","remote_vs_local"]}
+
+REPORT remote_vs_local
+{"status":"ok","report":"remote_vs_local","resolution":{...},"symbols":{...}}
+```
+
+---
+
+## Reporting Pipeline
+
+Reports are defined in `reports.json` (copied to the build directory at
+cmake time). Each report names the symbols and data sources it needs, and
+marks each source as required or optional.
+
+```json
+{
+  "reports": [
+    {
+      "name": "remote_vs_local",
+      "symbols": ["BTC", "ETH", "SOL"],
+      "sources": [
+        {"name": "Linux",   "required": true,  "max_staleness_ms": 5000},
+        {"name": "Mac-FIX", "required": true,  "max_staleness_ms": 5000},
+        {"name": "QuestDB", "required": false, "max_staleness_ms": 60000}
+      ]
+    }
+  ]
+}
+```
+
+### Three-phase execution
+
+```
+Resolution phase  ──  concurrent std::async per source
+  └── checks each source: HEALTH / QuestDB probe / staleness threshold
+  └── result: OK | STALE | UNREACHABLE
+
+Fetch phase  ──  concurrent std::async for all OK sources
+  └── SNAPSHOT per symbol, or QuestDB 1-hour aggregate query
+  └── required sources: abort report if UNREACHABLE
+  └── optional sources: included when available, skipped silently otherwise
+
+Generation phase  ──  single thread
+  └── merges live BBO + historical stats per symbol into JSON
+```
+
+### Report output structure
+
+```json
+{
+  "status": "ok",
+  "report": "remote_vs_local",
+  "generated_at_ms": 1778596023317,
+  "resolution": {
+    "Linux":   {"status": "ok"},
+    "Mac-FIX": {"status": "ok"},
+    "QuestDB": {"status": "ok"}
+  },
+  "symbols": {
+    "BTC": {
+      "live": {
+        "Binance": {"bid": 80801.49, "ask": 80813.41, "spread_bps": 1.47, "timestamp_ms": ...},
+        "Kraken":  {"bid": 80742.60, "ask": 80742.70, "spread_bps": 0.01, "timestamp_ms": ...}
+      },
+      "historical": {
+        "avg_spread_bps": 0.087,
+        "min_bid": 80742.6,
+        "max_ask": 80820.1,
+        "sample_count": 1562
+      }
+    }
+  }
+}
+```
+
+### DataSource abstraction
+
+Every data source implements a three-method interface:
+
+```cpp
+class DataSource {
+public:
+    virtual std::string      name()    const = 0;
+    virtual ResolutionResult resolve(symbols, max_staleness_ms) = 0;
+    virtual SourceData       fetch(symbols) = 0;
+};
+```
+
+Built-in implementations:
+
+| Class | Backed by | Protocol |
+|---|---|---|
+| `ExchangeDataSource` | Local `ArbitrageEngine` | In-process |
+| `RemoteDataSource` | Remote TickPlant node | TCP `SNAPSHOT`/`HEALTH` |
+| `QuestDbDataSource` | QuestDB REST API | HTTP + chunked transfer-encoding decode |
+
+New sources register themselves in `DataSourceRegistry` at startup — zero
+changes to pipeline logic required.
+
+---
+
+## Build
+
+### Dependencies
+
+| Library | Purpose |
+|---|---|
+| Boost (system, thread) | Boost.Asio WebSocket TLS layer |
+| OpenSSL | TLS for WebSocket connections |
+| nlohmann/json | JSON parsing throughout |
+| prometheus-cpp | Prometheus pull-model metrics |
+| liburing *(Linux, optional)* | io_uring query server backend |
+
+### macOS (vcpkg)
+
+```bash
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg && ./bootstrap-vcpkg.sh
+export VCPKG_ROOT=$(pwd)
+
+vcpkg install nlohmann-json openssl boost-system boost-thread prometheus-cpp
+
+cd /path/to/TickPlant
+mkdir build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
+make -j$(sysctl -n hw.logicalcpu)
+```
+
+### Linux (apt + vcpkg)
+
+```bash
+sudo apt install liburing-dev   # enables io_uring backend
+
+mkdir build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake \
+         -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+```
+
+### Optional build flags
+
+```bash
+# Choose queue implementation (default: MUTEX)
+cmake .. -DQUEUE_TYPE=SPSC    # or MPSC
+
+# Build Google Benchmark harnesses
+cmake .. -DBUILD_BENCHMARKS=ON
+
+# Build OrderBook ITCH replay test
+cmake .. -DBUILD_TESTS=ON
+```
+
+---
+
+## Running the Distributed Setup
+
+### Step 1 — Linux: start QuestDB
+
+```bash
+cd ~/questdb && ./bin/questdb.sh start
+# REST API: http://192.168.88.9:9000
+# ILP:      192.168.88.9:9009
+```
+
+### Step 2 — Linux: start the full node
+
+```bash
+./binance_dashboard \
+  --mode full \
+  --query-server epoll \
+  --query-port 9092
+```
+
+### Step 3 — Mac: start the FIX server (Process 1)
+
+```bash
+./binance_dashboard \
+  --mode fix-server \
+  --fix-port 9093
+```
+
+### Step 4 — Mac: start the report client (Process 2)
+
+```bash
+./binance_dashboard \
+  --mode report-client \
+  --add-remote "Mac-FIX:127.0.0.1:9093" \
+  --add-remote "Linux:192.168.88.9:9092" \
+  --questdb-host 192.168.88.9 \
+  --pretty
+```
+
+### Step 5 — Query from the report client REPL
+
+```
+> LISTREPORTS
+> REPORT remote_vs_local
+> REPORT bbo_summary
+> quit
+```
+
+---
+
+## Benchmark Results
+
+**Hardware**: Intel Core i5-2410M (Sandy Bridge, 4 logical cores, 2.3 GHz)  
+**OS**: Ubuntu 22.04, kernel 6.8, `isolcpus=2,3 nohz_full=2,3`  
+**Method**: server pinned to CPU 3, client pinned to CPU 2; 10,000 measured
+requests, 500 warmup; loopback interface
+
+```bash
+./bench_query_client --sym BTC --n 10000 --warmup 500
+```
+
+| Metric | epoll | io_uring |
+|---|---:|---:|
+| p50 RTT | ~1.6 ms | ~1.6 ms |
+| p99 RTT | ~2.0 ms | ~1.7–8.0 ms |
+| p999 RTT | ~2–8 ms | ~2–14 ms |
+| Syscalls / request | ~3 | ~1 |
+
+Tail latency is dominated by L3 cache pressure from the four concurrent
+WebSocket ingestion threads sharing the same 3 MB L3 cache. On isolated
+production hardware, io_uring's reduced syscall count translates to lower
+tail latency at high connection counts.
+
+### End-to-end latency (WebSocket → query response)
+
+| Percentile | Latency |
+|---|---|
+| p50 | 1.71 µs |
+| p99 | 37.5 µs |
+| p999 | 127 µs |
+
+---
+
+## Component Reference
+
+| Component | File(s) | Description |
+|---|---|---|
+| `BinanceClient` | `binance_client.*` | WebSocket depth20 @ 100 ms |
+| `CoinbaseClient` | `coinbase_client.*` | WebSocket level2 full book |
+| `KrakenClient` | `kraken_client.*` | WebSocket v2 BBO event-triggered |
+| `BybitClient` | `bybit_client.*` | WebSocket orderbook.50 |
+| `FIXFeedSimulator` | `fix_feed_simulator.*` | Synthetic burst FIX 4.4 TCP feed |
+| `FIXParser` | `fix_parser.*` | Hand-rolled FIX 4.4 tag parser |
+| `OrderBook` | `order_book.*` | Thread-safe L2 book (`shared_mutex`); `prune_crossed()` removes transiently crossed bid levels |
+| `ArbitrageEngine` | `arbitrage_engine.*` | Cross-exchange BBO comparison, delta application |
+| `TickLogger` | `tick_logger.*` | QuestDB ILP writer over TCP (nanosecond timestamps) |
+| `QueryServerEpoll` | `query_server_epoll.*` | Edge-triggered epoll query server (Linux) |
+| `QueryServerUring` | `query_server_uring.*` | io_uring query server via liburing (Linux) |
+| `SimpleQueryServer` | `simple_query_server.*` | `select()`-based portable query server (macOS) |
+| `DataSourceRegistry` | `data_source_registry.*` | Owns and looks up `DataSource` instances by name |
+| `ExchangeDataSource` | `exchange_data_source.*` | Wraps `ArbitrageEngine` as a `DataSource` |
+| `RemoteDataSource` | `remote_data_source.*` | TCP client to a remote TickPlant node |
+| `QuestDbDataSource` | `questdb_data_source.*` | HTTP client to QuestDB REST API; decodes chunked transfer-encoding |
+| `ReportPipeline` | `report_pipeline.*` | Three-phase concurrent pipeline: resolve → fetch → generate |
+| `Metrics` | `metrics.*` | Prometheus pull-model metrics (port 9090) |
+| `Dashboard` | `dashboard.*` | Terminal UI with color-coded live display |
+
+---
+
+*This project is for educational and demonstration purposes and does not perform any trading operations.*
